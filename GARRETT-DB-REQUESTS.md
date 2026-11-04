@@ -1,5 +1,28 @@
 # Database requests for Garrett (Baalmann Suite)
 
+## 0. URGENT: the list import mis-reads Francis's vendor file (affects which owners get mailed)
+
+Checked against `Baalmann_Francis_Sep_2026.csv` (28,586 rows):
+
+- The file has `RANK`, but it's a **decimal score from 0 to 4.58**, not a position. `TOTAL = RANK + MOTIVATION POINTS` on every row, and higher means more likely to sell. There is no "1 = best" column.
+- `src/lib/csv.ts` auto-maps any header matching `/rank/` to `vendor_rank`, and `toInt()` strips non-digits, so `"3.06"` becomes `306` and `"0.0"` becomes `0`.
+- `select_for_mail()` orders by `vendor_rank` ascending, so it marks the **lowest-scoring** owners first.
+- `vendor_score` (`/score|motivation/`) likely lands on `MOTIVATIONS` (text) or `MOTIVATION POINTS`, not `TOTAL`.
+- `OWNER TOTAL PROPERTIES` isn't auto-mapped to `vendor_property_count`, so door counts come out as 1 for nearly everyone (the list has one row per owner).
+
+What to check: if this list is already imported, look at its `vendor_rank` values. Numbers like 0–458 mean it was mis-mapped, and any mail selection made from it should be redone before printing.
+
+Suggested fix:
+- `toInt()` should refuse decimals rather than stripping the dot.
+- When the mapped rank column is fractional or there's only a score, set `vendor_rank` to the row's position by `vendor_score` descending (`row_number() over (order by vendor_score desc)` in `process_import`).
+- Map `TOTAL` to `vendor_score`, and match `OWNER TOTAL PROPERTIES` in the hints.
+
+Workaround today: on the import screen, map Vendor rank to nothing, Vendor score to `TOTAL`, and Properties to `OWNER TOTAL PROPERTIES`. Upload the file pre-sorted by `TOTAL` descending; the CRM then numbers rows in file order. I can produce that sorted file.
+
+The agents worker no longer depends on this: it reads `TOTAL`, `OWNER TOTAL PROPERTIES`, `FIRST NAME` and probate flags from `list_rows.raw`.
+
+---
+
 The agents worker runs today with **no schema changes**. These would make it sturdier. Nothing here is urgent except where marked; each is a new numbered migration plus tests in `supabase/tests/test_rls.sql`, per the repo rules. I haven't touched the CRM repo.
 
 ## 1. Duplicate guards in the database (recommended)
