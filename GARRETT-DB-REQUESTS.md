@@ -1,5 +1,19 @@
 # Database requests for Garrett (Baalmann Suite)
 
+## Status, Nov 4 (after migration 14)
+
+| # | Request | Status |
+| --- | --- | --- |
+| 0 | List import mis-reads the vendor's RANK score | **Open, urgent.** Not covered by migration 14. See below. |
+| 1 | Duplicate guards | Done. Worker treats SQLSTATE 23505 as "already done". |
+| 2 | ProyTech's own spend | Done. Worker writes `house_cost_cents`; `result.spend` keeps the AI/search split. |
+| 3 | Texting rule | Done as `can_text()`. Worker calls it before any SMS draft and when planning drafts. |
+| 4 | Stuck jobs | Stays in the worker (requeue after 30 min, fail after 3 attempts). |
+| 5 | Stale config | Done. |
+| 6 | Production login | Done. Password goes only in Railway. |
+
+Worker tests now run against all 14 migrations (CRM at 7b5c6db).
+
 ## 0. URGENT: the list import mis-reads Francis's vendor file (affects which owners get mailed)
 
 Checked against `Baalmann_Francis_Sep_2026.csv` (28,586 rows):

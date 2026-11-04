@@ -6,6 +6,7 @@ const PAULA = '50000000-0000-0000-0000-000000000001';
 const TOM = '50000000-0000-0000-0000-000000000002';
 const CORA = '50000000-0000-0000-0000-000000000003';
 const OLIVE = '50000000-0000-0000-0000-000000000004';
+const RITA = '50000000-0000-0000-0000-000000000006';
 
 const emailLlm = () => fakeLlm(() => '{"subject": "Your place on Elm St", "body": "Hi Paula, ... Helping Hands"}');
 
@@ -14,6 +15,8 @@ test('message.draft writes one email draft, source agent, status draft', async (
   const job = await run({ llm }, { type: 'message.draft', agent: 'contact', input: { person_id: PAULA, purpose: 'cold', channel: 'email' } });
   assert.equal(job.status, 'done', job.error);
   assert.equal(job.result.written, true);
+  assert.ok(Number(job.house_cost_cents) > 0, 'AI spend recorded in house_cost_cents');
+  assert.equal(job.cost_cents, 0, "no charge to Francis's lookup budget");
   const d = (await admin.query(`select * from public.outbound_drafts where person_id = $1`, [PAULA])).rows;
   assert.equal(d.length, 1);
   assert.deepEqual([d[0].channel, d[0].purpose, d[0].source, d[0].status], ['email', 'cold', 'agent', 'draft']);
@@ -74,4 +77,19 @@ test('without an API key, drafting is blocked with a reason', async () => {
   const job = await run({ llm: null }, { type: 'message.draft', agent: 'contact', input: { person_id: PAULA } });
   assert.equal(job.status, 'blocked');
   assert.match(job.error, /ANTHROPIC_API_KEY/);
+});
+
+test("a contact from Francis's phone (not a seller list) can get a text draft: can_text() rule 3", async () => {
+  const llm = fakeLlm(() => '{"body": "Hi Rita, do you have anything coming up in west Wichita? - Helping Hands"}');
+  const job = await run({ llm }, { type: 'message.draft', agent: 'contact', input: { person_id: RITA, purpose: 'warm', channel: 'sms' } });
+  assert.equal(job.status, 'done', job.error);
+  assert.equal((await admin.query(`select channel from public.outbound_drafts where person_id = $1`, [RITA])).rows[0].channel, 'sms');
+});
+
+test("the worker's text check matches the CRM's can_text() for every test person", async () => {
+  const { rows } = await agentDb.query(`select p.id, public.can_text(p.id, r.business_id) as ok from public.people p join public.relationships r on r.person_id = p.id`);
+  const by = Object.fromEntries(rows.map((r) => [r.id, r.ok]));
+  assert.equal(by[CORA], false, 'cold list seller: no texts');
+  assert.equal(by[TOM], true, 'texted us first');
+  assert.equal(by[RITA], true, "Francis's own contact");
 });

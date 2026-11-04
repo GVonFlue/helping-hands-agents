@@ -2,7 +2,7 @@
 
 The background worker for the Baalmann Business Suite (client: Francis, Helping Hands Homebuyers). Runs on Railway, connects to Supabase Postgres as `agents_worker` (a member of the locked-down `agent_service` role), claims jobs from `agent_jobs`, and writes only to the staging tables the handoff allows. It never uses the Supabase service role key, and it refuses to start if its login is privileged.
 
-**Agents never send anything.** Contact writes drafts to `outbound_drafts` (`source = 'agent'`, `status = 'draft'`); a person approves every one in the CRM. No cold texts: SMS drafts only for people who texted in or opted in to texts. List sellers get email.
+**Agents never send anything.** Contact writes drafts to `outbound_drafts` (`source = 'agent'`, `status = 'draft'`); a person approves every one in the CRM. No cold texts: SMS drafts only when the CRM's `can_text()` is true (opted in, texted us, or one of Francis's non-list contacts), the same check the CRM's sender runs. List sellers get email.
 
 ## Job types
 
@@ -19,7 +19,7 @@ The background worker for the Baalmann Business Suite (client: Francis, Helping 
 ## Money
 
 - **Francis's money** (paid lookups billed to him): `agent_jobs.cost_cents`, gated by `agent_budget_left()` before every paid call. Currently $0, so nothing paid runs on his budget.
-- **ProyTech's money** (out of the flat $249): AI tokens and search queries. Recorded per job in `agent_jobs.result -> 'spend'` and capped monthly by `AI_MONTHLY_CEILING_CENTS` ($40) and `SEARCH_MONTHLY_CEILING_CENTS` ($25). To see this month:
+- **ProyTech's money** (out of the flat $249): AI tokens and search queries. Recorded per job in `agent_jobs.house_cost_cents` (split into AI and search in `result -> 'spend'`), shown as `house_spend_cents` in `business_stats`, and capped monthly by `AI_MONTHLY_CEILING_CENTS` ($40) and `SEARCH_MONTHLY_CEILING_CENTS` ($25). To see this month:
 
 ```sql
 select date_trunc('month', finished_at) as month,

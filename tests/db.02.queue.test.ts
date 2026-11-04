@@ -111,3 +111,24 @@ test('the scheduler queues the weekly report and hourly draft planner once, and 
   }
   await admin.query(`update public.agent_jobs set status = 'cancelled' where status = 'queued'`);
 });
+
+test('a database duplicate guard firing counts as already done, not a failure', async () => {
+  const biz = await HH();
+  await admin.query(`insert into public.agent_reports (business_id, period_start, period_end, title, body) values ($1, '2001-02-05', '2001-02-11', 'first', 'x')`, [biz]);
+  handlers['test.dup'] = async ({ job }) => ({
+    status: 'done',
+    result: {},
+    write: async (tx) => {
+      await tx.query(`insert into public.agent_reports (business_id, period_start, period_end, title, body) values ($1, '2001-02-05', '2001-02-11', 'second', 'x')`, [job.business_id]);
+    },
+  });
+  try {
+    const job = await run({}, { type: 'test.dup', agent: 'manager', input: {} });
+    assert.equal(job.status, 'done');
+    assert.match(job.result.skipped, /duplicate guard/);
+    const n = await admin.query(`select count(*)::int as n from public.agent_reports where period_start = '2001-02-05'`);
+    assert.equal(n.rows[0].n, 1);
+  } finally {
+    delete handlers['test.dup'];
+  }
+});

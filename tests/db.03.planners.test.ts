@@ -45,7 +45,7 @@ test('plan.drafts queues one first email draft per promoted person, and skips Fa
 test('plan.drafts never auto-drafts to a person tied to a probate row', async () => {
   const biz = await HH();
   await admin.query(`insert into public.people (id, full_name, first_name) values ('50000000-0000-0000-0000-000000000007', 'Ruth Elderberry', 'Ruth')`);
-  await admin.query(`insert into public.relationships (person_id, business_id, role_key) values ('50000000-0000-0000-0000-000000000007', $1, 'seller_occupant')`, [biz]);
+  await admin.query(`insert into public.relationships (person_id, business_id, role_key, source) values ('50000000-0000-0000-0000-000000000007', $1, 'seller_occupant', 'seller list')`, [biz]);
   await admin.query(`insert into public.contact_points (person_id, kind, value, is_primary) values ('50000000-0000-0000-0000-000000000007', 'email', 'ruth@example.test', true)`);
   await admin.query(`update public.list_rows set person_id = '50000000-0000-0000-0000-000000000007' where id = '20000000-0000-0000-0000-000000000007'`);
   await admin.query(`insert into public.enrichment_results (business_id, person_id, list_row_id, kind, value, source, status, reviewed_at)

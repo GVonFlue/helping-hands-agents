@@ -47,12 +47,13 @@ export function addSearch(s: Spend, centsPerQuery: number): void {
 
 // House spend this calendar month across the whole suite (one client, one $249).
 export async function houseSpendThisMonth(db: Db): Promise<{ ai_cents: number; search_cents: number }> {
+  // house_cost_cents (migration 14) holds the total; result.spend keeps the split.
   const { rows } = await db.query(
     `select coalesce(sum((result -> 'spend' ->> 'ai_cents')::numeric), 0) as ai_cents,
             coalesce(sum((result -> 'spend' ->> 'search_cents')::numeric), 0) as search_cents
        from public.agent_jobs
       where finished_at >= date_trunc('month', now())
-        and result ? 'spend'`,
+        and house_cost_cents > 0`,
   );
   return { ai_cents: Number(rows[0].ai_cents), search_cents: Number(rows[0].search_cents) };
 }

@@ -67,15 +67,15 @@ export const planFacebook: Handler = async ({ db, job, config, search }) => {
 };
 
 // plan.drafts (Manager, hourly): when Francis promotes a finding onto a person,
-// queue a first draft for them. Email for list sellers; a text only for people who
-// texted us or opted in (message.draft enforces that again). One first draft per
+// queue a first draft for them. Email when they have one; a text only when
+// can_text() is true (message.draft and the CRM's sender check it again). One first draft per
 // person, ever, by idempotency key.
 export const planDrafts: Handler = async ({ db, job }) => {
   const { rows } = await db.query(
     `select distinct on (e.person_id) e.person_id,
             exists (select 1 from public.messages m where m.person_id = e.person_id and m.business_id = $1 and m.direction = 'in') as warm,
             exists (select 1 from public.contact_points c where c.person_id = e.person_id and c.kind = 'email' and not c.do_not_contact) as has_email,
-            exists (select 1 from public.messages m where m.person_id = e.person_id and m.business_id = $1 and m.channel = 'sms' and m.direction = 'in') as texted_us,
+            public.can_text(e.person_id, $1) as can_text,
             exists (select 1 from public.list_rows lr where lr.business_id = $1
                      and (lr.person_id = e.person_id or lr.id = e.list_row_id) and ${PROBATE_SQL('lr')}) as probate
        from public.enrichment_results e
@@ -90,7 +90,7 @@ export const planDrafts: Handler = async ({ db, job }) => {
     .map((r) => {
       if (r.probate) return null; // estate or heir situation: Francis writes those himself
       if (r.has_email) return { person_id: r.person_id, purpose: r.warm ? 'warm' : 'cold', channel: 'email' };
-      if (r.texted_us) return { person_id: r.person_id, purpose: 'warm', channel: 'sms' };
+      if (r.can_text) return { person_id: r.person_id, purpose: 'warm', channel: 'sms' };
       return null; // e.g. only a Facebook link: Francis messages those by hand
     })
     .filter((x): x is { person_id: string; purpose: string; channel: string } => x !== null);

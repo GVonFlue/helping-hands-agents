@@ -17,6 +17,7 @@ type Final = {
   result?: Record<string, unknown> | null;
   error?: string | null;
   costCents?: number;
+  houseCents?: number; // ProyTech's AI + search spend (migration 14 column)
 };
 
 // Only touches a job this worker still holds, so a job reaped and re-claimed
@@ -24,9 +25,10 @@ type Final = {
 export async function finishJob(q: Db | Tx, workerId: string, jobId: string, f: Final): Promise<boolean> {
   const { rowCount } = await q.query(
     `update public.agent_jobs
-        set status = $3, result = $4::jsonb, error = $5, cost_cents = $6, finished_at = now()
+        set status = $3, result = $4::jsonb, error = $5, cost_cents = $6, house_cost_cents = $7, finished_at = now()
       where id = $1 and status = 'running' and locked_by = $2`,
-    [jobId, workerId, f.status, f.result ? JSON.stringify(f.result) : null, f.error ?? null, Math.round(f.costCents ?? 0)],
+    [jobId, workerId, f.status, f.result ? JSON.stringify(f.result) : null, f.error ?? null, Math.round(f.costCents ?? 0),
+     Math.round((f.houseCents ?? 0) * 10_000) / 10_000],
   );
   return rowCount === 1;
 }

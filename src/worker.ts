@@ -17,6 +17,7 @@ export async function runJob(deps: Deps, job: Job): Promise<string> {
   const { db, config } = deps;
   const ctx: Ctx = { ...deps, job, spend: emptySpend() };
   const spendResult = () => (ctx.spend.ai_cents || ctx.spend.searches ? { spend: ctx.spend } : {});
+  const houseCents = () => ctx.spend.ai_cents + ctx.spend.search_cents;
   const handler = handlers[job.job_type];
   try {
     if (!handler) {
@@ -32,12 +33,23 @@ export async function runJob(deps: Deps, job: Job): Promise<string> {
           status: 'done',
           result: { ...out.result, ...(extra ?? {}), ...spendResult() },
           costCents: out.costCents ?? 0,
+          houseCents: houseCents(),
         });
         // Lost the job (reaped and re-claimed): roll back so nothing is written twice.
         if (!ok) throw new LostJob();
         return ok;
-      }).catch((e) => {
+      }).catch(async (e) => {
         if (e instanceof LostJob) return false;
+        // A database duplicate guard fired (migration 14): someone already wrote
+        // this finding/report/draft. That's "already done", not a failure.
+        if ((e as { code?: string }).code === '23505') {
+          return finishJob(db, config.workerId, job.id, {
+            status: 'done',
+            result: { ...out.result, written: false, skipped: 'already exists (database duplicate guard)', ...spendResult() },
+            costCents: out.costCents ?? 0,
+            houseCents: houseCents(),
+          });
+        }
         throw e;
       });
       if (!stillOurs) log('warn', 'job was no longer ours; findings rolled back', { job: job.id });
@@ -47,6 +59,7 @@ export async function runJob(deps: Deps, job: Job): Promise<string> {
       status: out.status,
       error: out.error,
       result: { ...(out.status === 'blocked' ? out.result ?? {} : {}), ...spendResult() },
+      houseCents: houseCents(),
     });
     return out.status;
   } catch (err) {
@@ -58,7 +71,7 @@ export async function runJob(deps: Deps, job: Job): Promise<string> {
       log('warn', 'job will retry', { job: job.id, type: job.job_type, attempt: job.attempts, error: message });
       return 'retry';
     }
-    await finishJob(db, config.workerId, job.id, { status: 'failed', error: message.slice(0, 500), result: spendResult() }).catch(
+    await finishJob(db, config.workerId, job.id, { status: 'failed', error: message.slice(0, 500), result: spendResult(), houseCents: houseCents() }).catch(
       () => {},
     );
     log('error', 'job failed', { job: job.id, type: job.job_type, error: message });

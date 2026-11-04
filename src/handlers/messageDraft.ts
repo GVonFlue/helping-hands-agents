@@ -12,7 +12,9 @@ const Input = z.object({
 
 // Contact: writes ONE personal draft into outbound_drafts (source 'agent', status
 // 'draft'). It never sends; Francis approves every draft in Approvals and the CRM
-// sends it. No cold texts: SMS only to people who texted us or opted in to texts.
+// sends it. No cold texts: SMS only when the CRM's can_text() says yes (they
+// opted in, texted us, or are a non-list contact of Francis's), the same check
+// the CRM's sender runs.
 export const messageDraft: Handler = async ({ db, job, llm, config, spend }) => {
   const parsed = Input.safeParse(job.input);
   if (!parsed.success) return { status: 'failed', error: 'input needs person_id (uuid), purpose warm|cold, channel email|sms' };
@@ -25,10 +27,10 @@ export const messageDraft: Handler = async ({ db, job, llm, config, spend }) => 
 
   if (channel === 'sms' && !ctx.textsAllowed) {
     if (!ctx.email) {
-      return { status: 'blocked', error: 'No cold texts: this person has not texted us or opted in to texts, and has no email.' };
+      return { status: 'blocked', error: 'No cold texts: this person has not agreed to texts or texted us, and has no email.' };
     }
     channel = 'email';
-    notes.push('switched to email: no texts to people who have not texted us or opted in');
+    notes.push('switched to email: can_text() is false (no opt-in and never texted us)');
   }
   if (channel === 'email' && !ctx.email) return { status: 'blocked', error: 'No usable email on file for this person.' };
   if (channel === 'sms' && !ctx.phone) return { status: 'blocked', error: 'No usable phone on file for this person.' };
@@ -115,7 +117,7 @@ async function loadContext(db: Db, businessId: string, personId: string) {
   );
   const p = person.rows[0];
   if (!p) return null;
-  const [biz, points, msgs, acts, deals, props, smsIn, consent] = await Promise.all([
+  const [biz, points, msgs, acts, deals, props, textCheck] = await Promise.all([
     db.query('select name, short_name, tagline from public.businesses where id = $1', [businessId]),
     db.query(
       `select kind, value, is_primary from public.contact_points
@@ -143,22 +145,13 @@ async function loadContext(db: Db, businessId: string, personId: string) {
         where person_id = $1 and business_id = $2 and property_address is not null limit 3`,
       [personId, businessId],
     ),
-    db.query(
-      `select 1 from public.messages where person_id = $1 and business_id = $2 and channel = 'sms' and direction = 'in' limit 1`,
-      [personId, businessId],
-    ),
-    db.query(
-      `select action from public.consent_events
-        where person_id = $1 and channel = 'sms' and (business_id is null or business_id = $2)
-        order by created_at desc limit 1`,
-      [personId, businessId],
-    ),
+    db.query('select public.can_text($1, $2) as ok', [personId, businessId]),
   ]);
   const email = points.rows.find((c) => c.kind === 'email')?.value ?? null;
   const phone = points.rows.find((c) => c.kind === 'phone')?.value ?? null;
-  // can_contact() treats "no consent record" as allowed, which would let a cold
-  // text through. Texts need a real signal: they texted us, or opted in.
-  const textsAllowed = (smsIn.rowCount ?? 0) > 0 || consent.rows[0]?.action === 'opt_in';
+  // can_contact() alone treats "no consent record" as allowed; can_text() adds
+  // the A2P rule (opt-in, texted us, or a non-list relationship).
+  const textsAllowed = textCheck.rows[0]?.ok === true;
   const b = biz.rows[0];
   return {
     email,

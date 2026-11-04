@@ -54,15 +54,17 @@ insert into public.entities (id, name, normalized_name, last_checked_at) values
   ('40000000-0000-0000-0000-000000000001', 'Acme Holdings LLC', 'acme holdings', now() - interval '10 days'),
   ('40000000-0000-0000-0000-000000000002', 'Prairie Rentals LLC', 'prairie rentals', null);
 
--- People for the Contact agent.
+-- People for the Contact agent. Rita is a realtor from Francis's phone (not a list).
 insert into public.people (id, full_name, first_name, last_name, mailing_city) values
   ('50000000-0000-0000-0000-000000000001', 'Paula Prospect', 'Paula', 'Prospect', 'Wichita'),  -- cold list seller, has email
   ('50000000-0000-0000-0000-000000000002', 'Tom Texter', 'Tom', 'Texter', 'Wichita'),          -- texted us first
   ('50000000-0000-0000-0000-000000000003', 'Cora Cold', 'Cora', 'Cold', 'Wichita'),            -- phone only, never contacted us
   ('50000000-0000-0000-0000-000000000004', 'Olive Optout', 'Olive', 'Optout', 'Wichita'),      -- unsubscribed from email
   ('50000000-0000-0000-0000-000000000005', 'Felix Facebook', 'Felix', 'Facebook', 'Wichita');  -- only a Facebook link
-insert into public.relationships (person_id, business_id, role_key)
-select p.id::uuid, hh.id, p.role from hh, (values
+-- Seller-list people carry source 'seller list' (as promote_owner sets it), so
+-- can_text() only lets them be texted after an opt-in or a text from them.
+insert into public.relationships (person_id, business_id, role_key, source)
+select p.id::uuid, hh.id, p.role, 'seller list' from hh, (values
   ('50000000-0000-0000-0000-000000000001', 'seller_investor'),
   ('50000000-0000-0000-0000-000000000002', 'seller_occupant'),
   ('50000000-0000-0000-0000-000000000003', 'seller_occupant'),
@@ -84,3 +86,8 @@ insert into public.enrichment_results (business_id, person_id, kind, value, conf
 select id, '50000000-0000-0000-0000-000000000001'::uuid, 'email', 'paula@example.test', 0.9, 'test', 'promoted', now() - interval '1 day' from hh
 union all
 select id, '50000000-0000-0000-0000-000000000005'::uuid, 'facebook', 'https://www.facebook.com/felix.fb', 0.8, 'test', 'promoted', now() - interval '1 day' from hh;
+
+-- Rita: a realtor from Francis's phone (not a seller list), phone only.
+insert into public.people (id, full_name, first_name, last_name) values ('50000000-0000-0000-0000-000000000006', 'Rita Realtor', 'Rita', 'Realtor');
+insert into public.relationships (person_id, business_id, role_key, source) select '50000000-0000-0000-0000-000000000006', id, 'realtor', 'phone import' from hh;
+insert into public.contact_points (person_id, kind, value, is_primary) values ('50000000-0000-0000-0000-000000000006', 'phone', '+13165550106', true);
