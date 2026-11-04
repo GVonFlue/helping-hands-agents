@@ -10,6 +10,7 @@ const ROW = {
   acme: '20000000-0000-0000-0000-000000000004',
   quint: '20000000-0000-0000-0000-000000000005',
   zimm: '20000000-0000-0000-0000-000000000006',
+  elder: '20000000-0000-0000-0000-000000000007',
 };
 
 const RESULTS: Record<string, SearchHit[]> = {
@@ -99,4 +100,11 @@ test('mailed owners are still searched; mobile links are normalised', async () =
   assert.equal(job.status, 'done', job.error);
   const f = (await admin.query(`select value from public.enrichment_results where list_row_id = $1`, [ROW.quint])).rows;
   assert.deepEqual(f.map((x) => x.value), ['https://www.facebook.com/maria.quintanilla.33']);
+});
+
+test('probate owners are skipped without searching (owner may be deceased)', async () => {
+  const search = provider();
+  const job = await run({ search }, { type: 'person.facebook', agent: 'scrub', input: { list_row_id: ROW.elder } });
+  assert.match(job.result.skipped, /probate/);
+  assert.equal(search.queries.length, 0);
 });

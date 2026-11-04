@@ -93,6 +93,9 @@ ${purpose === 'cold'
     : 'This person already knows us. Pick up naturally from the recent history.'}
 Rules:
 - Use only facts in the JSON. Never invent offers, prices, timelines, names or past conversations.
+- Never mention or hint at why we're writing to them: no taxes, debt, liens, probate, death, divorce, age,
+  vacancy, repairs, code violations, tenants or any other personal or financial situation. Never say how
+  we found them or that they are on a list.
 - Plain words, no hype, no exclamation marks, no emojis.
 - Sign off with the sender_name from the JSON.
 - Do not add an unsubscribe line or legal footer; the system adds those.

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isCommonName, parseOwnerName } from '../src/names.ts';
+import { firstNameFromRaw, isCommonName, parseOwnerName } from '../src/names.ts';
+import { isProbate } from '../src/listSignals.ts';
 import { pickMatch, profileUrl, scoreHit, type Subject } from '../src/facebook.ts';
 import { aiCents } from '../src/spend.ts';
 
@@ -71,4 +72,19 @@ test('no place signal is never enough, however rare the name', () => {
 test('AI cost math', () => {
   assert.equal(aiCents('claude-sonnet-5-5', 1_000_000, 0), 200);
   assert.equal(aiCents('claude-sonnet-5-5', 1500, 300), 0.6);
+});
+
+test("the list's own FIRST NAME column settles name order", () => {
+  // Without the hint, a given name that's also a common first name in second place flips the order.
+  assert.equal(parseOwnerName('DEVONTE THOMAS')[0]!.first, 'THOMAS');
+  assert.deepEqual(parseOwnerName('DEVONTE THOMAS', 'DEVONTE'), [{ first: 'DEVONTE', middle: null, last: 'THOMAS' }]);
+  assert.deepEqual(parseOwnerName('MARY ANN JONES-LEE', 'MARY')[0], { first: 'MARY', middle: 'ANN', last: 'JONES-LEE' });
+  assert.equal(firstNameFromRaw({ 'FULL NAME': 'X Y', 'FIRST NAME': 'X ' }), 'X');
+  assert.equal(firstNameFromRaw({ owner_first_name: 'Ann' }), 'Ann');
+});
+
+test('probate detection from the raw vendor row', () => {
+  assert.equal(isProbate({ 'PROBATE ADDRESS ID': '2972173940.0' }), true);
+  assert.equal(isProbate({ MOTIVATIONS: 'AbsenteeProbate Owner' }), true);
+  assert.equal(isProbate({ MOTIVATIONS: 'OwnerAge:40-49', 'PROBATE ADDRESS ID': '' }), false);
 });

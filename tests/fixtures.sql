@@ -24,6 +24,24 @@ from hh, (values
   ('20000000-0000-0000-0000-000000000006', 6, 'BRENT ZIMMERLE', '8 Cedar Ct', 'WICHITA', '1 Maple Ave', 'WICHITA', 5, 'k-zimm', 'p-maple', 'individual_investor')
 ) as v(id, n, owner, maddr, mcity, paddr, pcity, rank, okey, pkey, bucket);
 
+-- Raw vendor columns as in Francis's Sep 2026 file. vendor_rank above is
+-- deliberately misleading (Smith = 1) to prove the worker orders by TOTAL.
+update public.list_rows set raw = v.raw::jsonb from (values
+  ('20000000-0000-0000-0000-000000000001', '{"FULL NAME":"STOLTENBERG KARL J & DIANE M","TOTAL":"9.10","OWNER TOTAL PROPERTIES":"2","MOTIVATIONS":"Absentee"}'),
+  ('20000000-0000-0000-0000-000000000002', '{"FULL NAME":"STOLTENBERG KARL J & DIANE M","TOTAL":"8.40","OWNER TOTAL PROPERTIES":"2"}'),
+  ('20000000-0000-0000-0000-000000000003', '{"FULL NAME":"JOHN SMITH","FIRST NAME":"JOHN","TOTAL":"12.00","OWNER TOTAL PROPERTIES":"1"}'),
+  ('20000000-0000-0000-0000-000000000005', '{"FULL NAME":"MARIA QUINTANILLA","FIRST NAME":"MARIA","TOTAL":"19.00","OWNER TOTAL PROPERTIES":"1"}'),
+  ('20000000-0000-0000-0000-000000000006', '{"FULL NAME":"BRENT ZIMMERLE","FIRST NAME":"BRENT","TOTAL":"15.30","OWNER TOTAL PROPERTIES":"1"}')
+) as v(id, raw) where list_rows.id = v.id::uuid;
+
+-- A probate owner with the highest score: never searched, never auto-drafted.
+insert into public.list_rows (id, import_id, business_id, row_num, owner_name, mailing_city, mailing_state,
+  property_address, property_city, property_state, vendor_rank, owner_key, property_key, bucket, raw)
+select '20000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000001', id, 7, 'RUTH ELDERBERRY',
+  'WICHITA', 'KS', '3 Willow Way', 'WICHITA', 'KS', 4, 'k-elder', 'p-willow', 'owner_occupied',
+  '{"FULL NAME":"RUTH ELDERBERRY","FIRST NAME":"RUTH","TOTAL":"18.10","PROBATE ADDRESS ID":"2972173940.0","MOTIVATIONS":"Probate Owner"}'::jsonb
+from hh;
+
 -- Maria was mailed last month.
 insert into public.mailings (id, business_id, import_id, name, mailed_on, pieces, cost_total, created_by)
 select '30000000-0000-0000-0000-000000000001', id, '10000000-0000-0000-0000-000000000001', 'October mailer',

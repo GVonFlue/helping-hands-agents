@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { pickMatch, type Subject } from '../facebook.ts';
 import { houseSpendThisMonth, addSearch } from '../spend.ts';
-import { parseOwnerName, titleCase } from '../names.ts';
+import { firstNameFromRaw, parseOwnerName, titleCase } from '../names.ts';
+import { isProbate } from '../listSignals.ts';
 import type { SearchHit } from '../search.ts';
 import { UUID_RE, type Handler } from '../types.ts';
 
@@ -16,7 +17,7 @@ export const personFacebook: Handler = async ({ db, job, config, search, spend }
 
   const { rows } = await db.query(
     `select r.id, r.business_id, r.owner_name, r.owner_key, r.bucket, r.mailing_city, r.mailing_state,
-            r.property_city, r.property_state, p.facebook_url
+            r.property_city, r.property_state, r.raw, p.facebook_url
        from public.list_rows r left join public.people p on p.id = r.person_id
       where r.id = $1`,
     [parsed.data.list_row_id],
@@ -26,8 +27,11 @@ export const personFacebook: Handler = async ({ db, job, config, search, spend }
   if (row.bucket === 'entity') return { status: 'done', result: { skipped: 'owner is a company or trust' } };
   if (!row.owner_key) return { status: 'done', result: { skipped: 'row has no owner key' } };
   if (row.facebook_url) return { status: 'done', result: { skipped: 'person already has a Facebook link' } };
+  // The owner of record may have died; a profile match would be the wrong person
+  // to reach, or a memorial page. Heirs come through skip trace instead.
+  if (isProbate(row.raw)) return { status: 'done', result: { skipped: 'probate: owner may be deceased' } };
 
-  const people = parseOwnerName(row.owner_name);
+  const people = parseOwnerName(row.owner_name, firstNameFromRaw(row.raw));
   if (!people[0]) return { status: 'done', result: { skipped: 'owner name is not one person' } };
 
   // Never search the same owner twice (lists repeat 50–70% month to month).

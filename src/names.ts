@@ -105,17 +105,34 @@ function onePerson(part: string, carryLast: string | null): PersonName | null {
 
 // Returns the people named on a list row, primary owner first. Empty when the
 // owner is a trust, estate, company or otherwise not one person.
-export function parseOwnerName(ownerName: string | null | undefined): PersonName[] {
+// `firstNameHint` = the list's own first-name column when it has one (Francis's
+// vendor sends FULL NAME as "FIRST LAST" plus FIRST NAME); it settles the order.
+export function parseOwnerName(ownerName: string | null | undefined, firstNameHint?: string | null): PersonName[] {
   if (!ownerName) return [];
   const upper = ownerName.toUpperCase();
   if (NOT_A_PERSON.test(upper)) return [];
   const parts = upper.split(/\s*(?:&|\bAND\b|\/|;)\s*/);
   const people: PersonName[] = [];
-  for (const part of parts) {
+  const hint = tokens(firstNameHint ?? '')[0];
+  for (const [i, part] of parts.entries()) {
+    const t = tokens(part);
+    if (i === 0 && hint && t.length >= 2 && t[0] === hint) {
+      people.push({ first: hint, middle: t.length > 2 ? t[1]! : null, last: t[t.length - 1]! });
+      continue;
+    }
     const p = onePerson(part, people[0]?.last ?? null);
     if (p) people.push(p);
   }
   return people;
+}
+
+// The list's own first-name column, from the raw CSV row the CRM keeps.
+export function firstNameFromRaw(raw: Record<string, unknown> | null | undefined): string | null {
+  if (!raw) return null;
+  for (const [k, v] of Object.entries(raw)) {
+    if (/^(owner[\s_]*1?[\s_]*)?first[\s_]*name$/i.test(k.trim()) && typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
 }
 
 export function isCommonName(p: PersonName): boolean {
