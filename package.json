@@ -1,0 +1,28 @@
+{
+  "name": "helping-hands-agents",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Manager, Scrub and Contact agents for the Baalmann Business Suite. Runs on Railway, connects as agent_service.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "tsx --test tests/unit.*.test.ts",
+    "test:db": "bash scripts/test-db.sh",
+    "test": "npm run typecheck && npm run test:unit && npm run test:db"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.4.0",
+    "pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}

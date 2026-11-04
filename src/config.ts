@@ -1,0 +1,44 @@
+// Every setting comes from environment variables (Railway → Variables).
+// Secrets are never written to files; see .env.example for the names.
+
+function num(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a number, got "${raw}"`);
+  return n;
+}
+
+export type Config = ReturnType<typeof loadConfig>;
+
+export function loadConfig() {
+  const databaseUrl = process.env.DATABASE_URL ?? '';
+  if (!databaseUrl) throw new Error('DATABASE_URL is not set (agents_worker login, Supabase session pooler).');
+  return {
+    databaseUrl,
+    workerId: process.env.WORKER_ID || 'railway-worker-1',
+    agents: ['scrub', 'contact', 'manager'] as const,
+    claimBatch: num('CLAIM_BATCH', 5),
+    pollMs: num('POLL_MS', 15_000),
+    idlePollMs: num('IDLE_POLL_MS', 60_000),
+    maxAttempts: num('MAX_ATTEMPTS', 3),
+    staleLockMinutes: num('STALE_LOCK_MINUTES', 30),
+
+    // ProyTech's own spend, out of the flat $249 a month. Not Francis's lookup cap.
+    aiMonthlyCeilingCents: num('AI_MONTHLY_CEILING_CENTS', 4000),
+    searchMonthlyCeilingCents: num('SEARCH_MONTHLY_CEILING_CENTS', 2500),
+
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+    model: process.env.CLAUDE_MODEL || 'claude-sonnet-5-5',
+
+    // Facebook search. Off until a provider is signed off and its key is set.
+    searchProvider: (process.env.SEARCH_PROVIDER || '') as '' | 'brave',
+    braveApiKey: process.env.BRAVE_API_KEY || '',
+    searchCentsPerQuery: num('SEARCH_CENTS_PER_QUERY', 0.5),
+    searchMinIntervalMs: num('SEARCH_MIN_INTERVAL_MS', 1100),
+    facebookDailyLimit: num('FACEBOOK_DAILY_LIMIT', 100),
+    facebookMinConfidence: num('FACEBOOK_MIN_CONFIDENCE', 0.6),
+
+    entityCacheDays: 90,
+  };
+}
