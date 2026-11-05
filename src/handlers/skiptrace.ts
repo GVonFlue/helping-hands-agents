@@ -185,7 +185,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
   const q = await tracerfy.getQueue(queue_id);
   if (!q || q.pending) {
     if (await olderThan(db, job.id, '3 hours')) return { status: 'failed', error: `Tracerfy batch ${queue_id} still not finished after 3 hours.` };
-    return { status: 'wait', delaySec: 90, result: { queue_id, waiting: q ? 'pending' : 'not listed yet' } };
+    return { status: 'wait', delaySec: 90, result: { queue_id, waiting: q ? 'pending' : 'not listed yet', note: q?.note } };
   }
 
   const resultRows = await tracerfy.getQueueRows(queue_id);

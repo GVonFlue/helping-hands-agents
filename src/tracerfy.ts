@@ -24,7 +24,7 @@ export type TraceRecord = {
   mail_zip?: string;
 };
 
-export type QueueStatus = { pending: boolean; creditsDeducted: number | null };
+export type QueueStatus = { pending: boolean; creditsDeducted: number | null; note?: string };
 export type DncResult = { phone: string; clean: boolean; litigator: boolean };
 
 export interface Tracerfy {
@@ -50,7 +50,7 @@ export function tracerfyClient(apiKey: string, base = 'https://tracerfy.com'): T
     }
     if (res.status === 402) throw new Error('Tracerfy: not enough credits on the account. Add credits at tracerfy.com.');
     if (res.status === 401 || res.status === 403) throw new Error(`Tracerfy refused the key (${res.status}): ${text.slice(0, 160)}`);
-    if (!res.ok) throw new Error(`Tracerfy error ${res.status}: ${text.slice(0, 200)}`);
+    if (!res.ok) throw Object.assign(new Error(`Tracerfy error ${res.status}: ${text.slice(0, 200)}`), { status: res.status });
     try {
       return JSON.parse(text);
     } catch {
@@ -82,18 +82,26 @@ export function tracerfyClient(apiKey: string, base = 'https://tracerfy.com'): T
     },
 
     async getQueue(queueId) {
+      // 1. The jobs list (newest first; may be a bare array or wrapped).
       const list = await call('/v1/api/queues/');
-      const items = Array.isArray(list) ? list : ((list as { results?: unknown[] })?.results ?? []);
-      const q = (items as Record<string, unknown>[]).find((x) => Number(x.id) === queueId);
-      if (!q) return null;
-      return { pending: isPending(q), creditsDeducted: num(q.credits_deducted) };
+      const items = arrayOf(list);
+      const q = items.find((x) => Number(x.id ?? x.queue_id) === queueId);
+      if (q) return { pending: isPending(q), creditsDeducted: num(q.credits_deducted) };
+      // 2. Not listed: ask for the job itself. Rows back = finished; 409/empty = still running.
+      const seen = `list had ${items.length} jobs${items[0] ? `, keys: ${Object.keys(items[0]).slice(0, 12).join(',')}, ids: ${items.slice(0, 5).map((x) => x.id ?? x.queue_id).join(',')}` : ''}`;
+      try {
+        const rows = arrayOf(await call(`/v1/api/queue/${queueId}`));
+        if (rows.length) return { pending: false, creditsDeducted: null, note: `not in list (${seen}); queue/${queueId} returned ${rows.length} rows` };
+        return { pending: true, creditsDeducted: null, note: `not in list (${seen}); queue/${queueId} returned no rows yet` };
+      } catch (e) {
+        const st = (e as { status?: number }).status;
+        if (st === 409 || st === 404 || st === 202) return { pending: true, creditsDeducted: null, note: `not in list (${seen}); queue/${queueId} said ${st}` };
+        throw e;
+      }
     },
 
     async getQueueRows(queueId) {
-      const rows = await call(`/v1/api/queue/${queueId}`);
-      if (Array.isArray(rows)) return rows as Record<string, unknown>[];
-      const r = (rows as { results?: unknown[]; rows?: unknown[] }) ?? {};
-      return ((r.results ?? r.rows ?? []) as Record<string, unknown>[]);
+      return arrayOf(await call(`/v1/api/queue/${queueId}`));
     },
 
     async submitDnc(phones) {
@@ -120,6 +128,13 @@ export function tracerfyClient(apiKey: string, base = 'https://tracerfy.com'): T
       return { pending: false, creditsDeducted: num(q.credits_deducted), results: parseDncCsv(await res.text()) };
     },
   };
+}
+
+function arrayOf(v: unknown): Record<string, unknown>[] {
+  if (Array.isArray(v)) return v as Record<string, unknown>[];
+  const o = (v ?? {}) as Record<string, unknown>;
+  for (const k of ['results', 'data', 'queues', 'rows', 'records', 'items']) if (Array.isArray(o[k])) return o[k] as Record<string, unknown>[];
+  return [];
 }
 
 function isPending(q: Record<string, unknown>): boolean {
