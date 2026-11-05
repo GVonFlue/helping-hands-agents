@@ -4,7 +4,8 @@
 
 | # | Request | Status |
 | --- | --- | --- |
-| 0 | List import mis-reads the vendor's RANK score | **Open, urgent.** Not covered by migration 14. See below. |
+| 0 | List import mis-reads the vendor's RANK score | **Open.** September list imported Nov 4 with the workaround (sorted by TOTAL, rank = Not in file, score = TOTAL, properties = OWNER TOTAL PROPERTIES); the code fix is still needed for future uploads. See below. |
+| 7 | **New: `process_import` times out from the browser on a full list** | **Open.** See below. |
 | 1 | Duplicate guards | Done. Worker treats SQLSTATE 23505 as "already done". |
 | 2 | ProyTech's own spend | Done. Worker writes `house_cost_cents`; `result.spend` keeps the AI/search split. |
 | 3 | Texting rule | Done as `can_text()`. Worker calls it before any SMS draft and when planning drafts. |
@@ -13,6 +14,25 @@
 | 6 | Production login | Done. Password goes only in Railway. |
 
 Worker tests now run against all 14 migrations (CRM at 7b5c6db).
+
+## 7. NEW: `process_import` times out on a 28,586-row list
+
+Uploading Francis's September list from the Seller lists page: all 28,586 rows inserted fine, then the `process_import` RPC failed with "canceling statement due to statement timeout" (the `authenticated` role's short statement timeout on Supabase). The function rolled back cleanly, leaving the import in `uploading` with unkeyed rows.
+
+I finished it from the SQL editor as the same user (`testgvonflue@gmail.com`), with a longer timeout:
+
+```sql
+begin;
+set local statement_timeout = '10min';
+select set_config('request.jwt.claims', (select json_build_object('sub', id::text, 'role', 'authenticated')::text
+  from auth.users where email = 'testgvonflue@gmail.com'), true);
+select public.process_import('c1b016f1-fb6f-4874-a36f-3fef1d7d4d91');
+commit;
+```
+
+Result: `{"new":28586,"rows":28586,"repeat":0,"buckets":{"entity":1500,"owner_occupied":23868,"individual_investor":3218}}`, status `done`, ranks 1–28,586 in TOTAL order, 2,833 owners with 2+ doors, 1,272 entities.
+
+Every monthly upload will hit this (the repeat check gets slower as lists pile up). Options: run `process_import` from a server route (`api/`) with a longer timeout; split it into steps the browser calls one at a time; or `alter role authenticated set statement_timeout = '120s'` (simplest, but applies to every browser query).
 
 ## 0. URGENT: the list import mis-reads Francis's vendor file (affects which owners get mailed)
 
