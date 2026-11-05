@@ -10,7 +10,7 @@ pg.types.setTypeParser(1082, (v) => v);
 export type Db = pg.Pool;
 export type Tx = pg.PoolClient;
 
-export function createPool(url: string): Db {
+export function createPool(url: string, password?: string): Db {
   // Supabase's session pooler presents a certificate signed by Supabase's own CA.
   // Encryption stays on; set DATABASE_CA to the CA bundle to verify it too.
   const local = /@(localhost|127\.0\.0\.1)|host=\//.test(url) || url.includes('%2F');
@@ -22,7 +22,13 @@ export function createPool(url: string): Db {
   // A ?sslmode=require copied from Supabase would override `ssl` and turn on
   // strict certificate checks pg can't satisfy without the CA; drop it.
   const cleaned = url.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
-  return new pg.Pool({ connectionString: cleaned, max: 5, ssl, application_name: 'helping-hands-agents' });
+  return new pg.Pool({
+    connectionString: cleaned,
+    ...(password ? { password } : {}),
+    max: 5,
+    ssl,
+    application_name: 'helping-hands-agents',
+  });
 }
 
 export async function withTx<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {

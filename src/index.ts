@@ -35,7 +35,7 @@ if (port === '6543') await fail('DATABASE_URL uses port 6543 (transaction pooler
 if (host.endsWith('pooler.supabase.com') && !user.includes('.')) {
   await fail('pooler user must be agents_worker.<project-ref> (with the dot and project id).', { user });
 }
-const db = createPool(url);
+const db = createPool(url, config.databasePassword || undefined);
 
 // Refuse to run as anything but the locked-down agent role.
 const who = await db
@@ -46,7 +46,7 @@ const who = await db
   .catch(async (e: { code?: string; message?: string }) => {
     const m = e.message ?? String(e);
     const hint =
-      e.code === '28P01' || /password authentication/i.test(m) ? 'wrong password for agents_worker (check encoding of special characters)'
+      e.code === '28P01' || /password authentication/i.test(m) ? 'wrong password for agents_worker (paste it as-is into DATABASE_PASSWORD)'
       : /tenant or user not found/i.test(m) ? 'pooler does not recognise the user: it must be agents_worker.ylrfaqlxuxujyubjnqnz'
       : e.code === 'ENOTFOUND' ? 'host not found: copy the host from Supabase > Connect > Session pooler'
       : e.code === 'ENETUNREACH' ? 'network unreachable: probably the IPv6 direct host; use the Session pooler'

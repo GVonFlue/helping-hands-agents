@@ -16,6 +16,9 @@ export function loadConfig() {
   if (!databaseUrl) throw new Error('DATABASE_URL is not set (agents_worker login, Supabase session pooler).');
   return {
     databaseUrl,
+    // Optional: the password on its own, pasted as-is (no URL encoding needed).
+    // When set, it's used instead of any password inside DATABASE_URL.
+    databasePassword: process.env.DATABASE_PASSWORD || '',
     workerId: process.env.WORKER_ID || 'railway-worker-1',
     agents: ['scrub', 'contact', 'manager'] as const,
     claimBatch: num('CLAIM_BATCH', 5),
