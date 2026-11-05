@@ -55,3 +55,31 @@ export function braveSearch(apiKey: string): SearchProvider {
 function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
 }
+
+// Serper.dev adapter (picked Nov 4 2026). Its terms let customers keep downloaded
+// results "for as long as your use case requires" (Usage License, serper.dev/terms);
+// written confirmation requested from the vendor before scaling up. Results are
+// Google's, scraped by Serper. ~$1 per 1,000 queries (prepaid), 2,500 free.
+export function serperSearch(apiKey: string, endpoint = 'https://google.serper.dev/search'): SearchProvider {
+  return {
+    name: 'logged out search (serper)',
+    async search(query) {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q: query, gl: 'us', hl: 'en', num: 10 }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.status === 429 || res.status >= 500) throw new RetryableError(`search provider busy (${res.status})`, 900);
+      if (!res.ok) throw new Error(`search provider error ${res.status}`);
+      return mapSerper(await res.json());
+    },
+  };
+}
+
+export function mapSerper(body: unknown): SearchHit[] {
+  const organic = (body as { organic?: { link?: string; title?: string; snippet?: string }[] })?.organic ?? [];
+  return organic
+    .filter((r) => typeof r.link === 'string')
+    .map((r) => ({ url: r.link!, title: stripTags(r.title ?? ''), snippet: stripTags(r.snippet ?? '') }));
+}

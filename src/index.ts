@@ -2,7 +2,7 @@ import { anthropicLlm } from './ai.ts';
 import { loadConfig } from './config.ts';
 import { createPool } from './db.ts';
 import { log } from './log.ts';
-import { braveSearch, rateLimited } from './search.ts';
+import { braveSearch, rateLimited, serperSearch } from './search.ts';
 import { loop } from './worker.ts';
 
 const config = loadConfig();
@@ -21,10 +21,13 @@ if (!who.rows[0].agent || who.rows[0].too_powerful) {
 }
 
 const llm = config.anthropicApiKey ? anthropicLlm(config.anthropicApiKey, config.model) : null;
-const search =
-  config.searchProvider === 'brave' && config.braveApiKey
-    ? rateLimited(braveSearch(config.braveApiKey), config.searchMinIntervalMs)
-    : null;
+const provider =
+  config.searchProvider === 'serper' && config.serperApiKey
+    ? serperSearch(config.serperApiKey)
+    : config.searchProvider === 'brave' && config.braveApiKey
+      ? braveSearch(config.braveApiKey)
+      : null;
+const search = provider ? rateLimited(provider, config.searchMinIntervalMs) : null;
 
 const stop = new AbortController();
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {

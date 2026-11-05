@@ -4,6 +4,7 @@ import { firstNameFromRaw, isCommonName, parseOwnerName } from '../src/names.ts'
 import { isProbate } from '../src/listSignals.ts';
 import { pickMatch, profileUrl, scoreHit, type Subject } from '../src/facebook.ts';
 import { aiCents } from '../src/spend.ts';
+import { mapSerper } from '../src/search.ts';
 
 test('owner names: county order, first-last, commas, couples, suffixes', () => {
   assert.deepEqual(parseOwnerName('STOLTENBERG KARL J & DIANE M'), [
@@ -87,4 +88,13 @@ test('probate detection from the raw vendor row', () => {
   assert.equal(isProbate({ 'PROBATE ADDRESS ID': '2972173940.0' }), true);
   assert.equal(isProbate({ MOTIVATIONS: 'AbsenteeProbate Owner' }), true);
   assert.equal(isProbate({ MOTIVATIONS: 'OwnerAge:40-49', 'PROBATE ADDRESS ID': '' }), false);
+});
+
+test('Serper responses map to url, title, snippet', () => {
+  const hits = mapSerper({ organic: [
+    { title: 'Karl Stoltenberg | Facebook', link: 'https://www.facebook.com/karl.s.7', snippet: 'Lives in Wichita, Kansas.', position: 1 },
+    { title: 'no link' },
+  ] });
+  assert.deepEqual(hits, [{ url: 'https://www.facebook.com/karl.s.7', title: 'Karl Stoltenberg | Facebook', snippet: 'Lives in Wichita, Kansas.' }]);
+  assert.deepEqual(mapSerper({}), []);
 });

@@ -30,7 +30,7 @@ from agent_jobs where result ? 'spend' group by 1 order by 1 desc;
 
 ## Facebook search: pending sign-off
 
-The provider is pluggable (`src/search.ts`). The Brave adapter is written but **should not be turned on yet**: Brave's standard API terms forbid storing results beyond transient use, and we store the profile URL for Francis to review. Pick a provider whose terms allow storing result URLs (or a Brave plan with storage rights), then set `SEARCH_PROVIDER` and its key. The worker only ever calls the search API; it never requests facebook.com, logs in or messages anyone.
+Provider: **Serper.dev** (`SEARCH_PROVIDER=serper`, `SERPER_API_KEY`). Its terms let customers keep downloaded results for as long as their use case requires; ask Serper to confirm in writing before scaling up. About $1 per 1,000 queries prepaid, 2,500 free. Results are Google's, scraped by Serper, so supply can be disrupted. The Brave adapter stays in the code but is not to be used: Brave's standard terms forbid storing results. The worker only ever calls the search API; it never requests facebook.com, logs in or messages anyone.
 
 Matching (`src/facebook.ts`): the profile name must contain the owner's first name (or a nickname) and last name. Points for city, middle initial, the co-owner named in the snippet, and a rare surname; penalties for a different middle name, another state, or a very common name. Nothing is written below 0.6, when there's no place signal, or when two profiles score within 0.15 of each other.
 

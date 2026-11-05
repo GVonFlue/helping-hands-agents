@@ -32,9 +32,10 @@ export function loadConfig() {
     model: process.env.CLAUDE_MODEL || 'claude-sonnet-5-5',
 
     // Facebook search. Off until a provider is signed off and its key is set.
-    searchProvider: (process.env.SEARCH_PROVIDER || '') as '' | 'brave',
-    braveApiKey: process.env.BRAVE_API_KEY || '',
-    searchCentsPerQuery: num('SEARCH_CENTS_PER_QUERY', 0.5),
+    searchProvider: (process.env.SEARCH_PROVIDER || '') as '' | 'serper' | 'brave',
+    serperApiKey: process.env.SERPER_API_KEY || '',
+    braveApiKey: process.env.BRAVE_API_KEY || '', // not signed off: Brave's terms forbid storing results
+    searchCentsPerQuery: num('SEARCH_CENTS_PER_QUERY', 0.1), // Serper: $50 per 50k queries
     searchMinIntervalMs: num('SEARCH_MIN_INTERVAL_MS', 1100),
     facebookDailyLimit: num('FACEBOOK_DAILY_LIMIT', 100),
     facebookMinConfidence: num('FACEBOOK_MIN_CONFIDENCE', 0.6),
