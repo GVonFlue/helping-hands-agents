@@ -203,3 +203,32 @@ test("test mode (Tracerfy's free mock server) runs with a $0 cap and records $0;
   assert.equal(isTestMode(config({ tracerfyBase: 'https://tracerfy.com' })), false);
   assert.equal(isTestMode(config({ tracerfyBase: 'https://tracerfy.com/mock.json' })), false);
 });
+
+test('test mode end to end: nothing saved on real owners, nobody marked as looked up, $0 recorded', async () => {
+  const biz = await HH();
+  const mock = fakeTracerfy();
+  const cfg = config({ tracerfyBase: 'https://mock.tracerfy.com' });
+  await admin.query(`update public.agent_settings set monthly_cap_cents = 0 where business_id = $1 and agent = 'scrub'`, [biz]);
+  // A fresh owner nobody has traced.
+  await admin.query(`insert into public.list_rows (id, import_id, business_id, row_num, owner_name, mailing_address, mailing_city, mailing_state, property_address, property_city, property_state, vendor_rank, owner_key, property_key, bucket)
+                     select '20000000-0000-0000-0000-000000000009', '10000000-0000-0000-0000-000000000001', $1, 9, 'OLGA TESTOVA', '5 Fir St', 'WICHITA', 'KS', '5 Fir St', 'WICHITA', 'KS', 9, 'k-olga', 'p-fir', 'owner_occupied'`, [biz]);
+  const before = await count(`select 1 from public.enrichment_results where business_id = $1`, [biz]);
+  const plan = await run({ tracerfy: mock, config: cfg }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 50 } });
+  assert.equal(plan.result.batches_queued, 1, 'cap is $0 but test mode still plans');
+  const sub = (await admin.query(`select id from public.agent_jobs where job_type = 'skiptrace.submit' and status = 'queued'`)).rows[0];
+  const s = await runExisting({ tracerfy: mock, config: cfg }, sub.id);
+  assert.equal(s.cost_cents, 0);
+  assert.equal(s.result.test_mode, true);
+  const col = (await admin.query(`select id from public.agent_jobs where job_type = 'skiptrace.collect' and status = 'queued'`)).rows[0];
+  await runExisting({ tracerfy: mock, config: cfg }, col.id);
+  const c = await runExisting({ tracerfy: mock, config: cfg }, col.id);
+  assert.equal(c.status, 'done', c.error);
+  assert.ok(c.result.would_save.phones >= 1);
+  const d = (await admin.query(`select id from public.agent_jobs where job_type = 'skiptrace.dnc' and status = 'queued'`)).rows[0];
+  const dj = await runExisting({ tracerfy: mock, config: cfg }, d.id);
+  assert.equal(dj.cost_cents, 0);
+  assert.equal(await count(`select 1 from public.enrichment_results where business_id = $1`, [biz]), before, 'no mock data saved');
+  // Olga can still be traced for real later.
+  const real = await run({ tracerfy: mock, config: config() }, { type: 'person.lookup', agent: 'scrub', input: { list_row_id: '20000000-0000-0000-0000-000000000009' } });
+  assert.doesNotMatch(String(real.result?.skipped ?? ''), /already looked up/);
+});

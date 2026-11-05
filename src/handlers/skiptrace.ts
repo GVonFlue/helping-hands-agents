@@ -43,6 +43,7 @@ const TRACED_SQL = (r: string) => `exists (
   select 1 from public.agent_jobs j, public.list_rows r2
    where j.business_id = ${r}.business_id and j.job_type = 'skiptrace.submit'
      and j.status in ('queued', 'running', 'done')
+     and coalesce((j.result ->> 'test_mode')::boolean, false) = false
      and (j.input -> 'list_row_ids') ? r2.id::text
      and r2.owner_key = ${r}.owner_key)`;
 
@@ -163,7 +164,7 @@ export const skiptraceSubmit: Handler = async ({ db, job, config, tracerfy }) =>
         `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
          values ($1, 'scrub', 'skiptrace.collect', $2::jsonb, $3, 'queued', now() + interval '90 seconds')
          on conflict (idempotency_key) do nothing`,
-        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type }), `skiptrace.collect:${queueId}`],
+        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type }), `skiptrace.collect:${job.id}`],
       );
     },
   };
@@ -230,7 +231,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
 
   return {
     status: 'done',
-    lockKey: `skiptrace:${queue_id}`,
+    lockKey: `skiptrace:${submit_job_id}`,
     result: {
       queue_id, rows_returned: resultRows.length, matched, unmatched, deceased_skipped: deceased,
       emails: emails.length, entity_members: members.length, phones: phones.length,
@@ -240,6 +241,18 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
       phones_held_back: config.skiptraceDnc && !dncQueueId && phones.length ? 'budget ran out before the DNC scrub' : undefined,
     },
     write: async (tx) => {
+      // Test mode: mock data must never land on Francis's real owners.
+      if (isTestMode(config)) {
+        if (dncQueueId) {
+          await tx.query(
+            `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
+             values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
+             on conflict (idempotency_key) do nothing`,
+            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type }), `skiptrace.dnc:${job.id}`],
+          );
+        }
+        return { test_mode: true, findings_saved: 0, would_save: { emails: emails.length, entity_members: members.length, phones: phones.length } };
+      }
       // The submit job held the most the batch could cost; set what Tracerfy actually charged.
       if (actualCents !== null) {
         await tx.query(`update public.agent_jobs set cost_cents = $2 where id = $1`, [submit_job_id, actualCents]);
@@ -256,7 +269,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
           `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
            values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
            on conflict (idempotency_key) do nothing`,
-          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type }), `skiptrace.dnc:${dncQueueId}`],
+          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type }), `skiptrace.dnc:${job.id}`],
         );
       }
       return { findings_saved: saved, trace_cents: actualCents };
@@ -288,12 +301,16 @@ export const skiptraceDnc: Handler = async ({ db, job, config, tracerfy }) => {
 
   return {
     status: 'done',
-    lockKey: `skiptrace-dnc:${dnc_queue_id}`,
+    lockKey: `skiptrace-dnc:${collect_job_id}`,
     costCents: isTestMode(config) ? 0 : charged * CENTS_PER_CREDIT,
     result: { dnc_queue_id, phones: pending.length, scrubbed: q.results.length },
     write: async (tx) => {
       let saved = 0;
       let flagged = 0;
+      if (isTestMode(config)) {
+        flagged = pending.filter((p) => { const s2 = scrub.get(p.phone); return !s2 || !s2.clean || s2.litigator; }).length;
+        return { test_mode: true, findings_saved: 0, would_save_phones: pending.length, would_flag_do_not_call: flagged };
+      }
       for (const p of pending) {
         const s = scrub.get(p.phone);
         // Not in the scrub results = unknown = treat as Do Not Call.
