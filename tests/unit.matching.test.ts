@@ -37,7 +37,8 @@ test('only personal profile URLs pass, normalised', () => {
   for (const bad of [
     'https://www.facebook.com/groups/123456',
     'https://www.facebook.com/pages/Some-Biz/123',
-    'https://www.facebook.com/jane.doe/posts/999',
+    'https://www.facebook.com/jane.doe/events/999',
+    'https://www.facebook.com/100090816563619/posts/123',
     'https://l.facebook.com/l.php?u=x',
     'https://www.facebook.com/marketplace',
     'https://evil-facebook.com/jane.doe',
@@ -97,4 +98,18 @@ test('Serper responses map to url, title, snippet', () => {
   ] });
   assert.deepEqual(hits, [{ url: 'https://www.facebook.com/karl.s.7', title: 'Karl Stoltenberg | Facebook', snippet: 'Lives in Wichita, Kansas.' }]);
   assert.deepEqual(mapSerper({}), []);
+});
+
+test("a person's own post points to their profile; page posts and mentions don't", () => {
+  const stacie: Subject = { person: { first: 'STACIE', middle: null, last: 'MOOMEY' }, coOwnerFirst: null, cities: ['Wichita'], states: ['KS'] };
+  const own = scoreHit({ url: 'https://www.facebook.com/stacie.moomey.5/posts/123456', title: 'Stacie Moomey', snippet: 'Wichita, Kansas' }, stacie)!;
+  assert.equal(own.url, 'https://www.facebook.com/stacie.moomey.5');
+  assert.ok(own.signals.includes('from their own post'));
+  assert.ok(own.score >= 0.6);
+  // A page's post that mentions her in the snippet: title isn't her name.
+  assert.equal(scoreHit({ url: 'https://www.facebook.com/wichitanews/posts/1', title: 'Big game Friday night', snippet: 'Stacie Moomey and 69 others. Wichita' }, stacie), null);
+  // Someone else's post titled with her name but the username isn't hers.
+  assert.equal(scoreHit({ url: 'https://www.facebook.com/lexi.mcintosh2001/posts/9', title: 'Stacie Moomey', snippet: 'Wichita' }, stacie), null);
+  // A post with a long title (not just the author's name).
+  assert.equal(scoreHit({ url: 'https://www.facebook.com/stacie.moomey.5/posts/2', title: 'Stacie Moomey is at the Wichita State game', snippet: '' }, stacie), null);
 });

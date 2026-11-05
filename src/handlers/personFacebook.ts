@@ -49,7 +49,9 @@ export const personFacebook: Handler = async ({ db, job, config, search, spend }
 
   const cities = uniq([row.mailing_city, row.property_city].filter(Boolean).map((c: string) => titleCase(c.trim())));
   const queries = (cities.length ? cities : ['Kansas']).slice(0, 2).map(
-    (c) => `"${titleCase(`${people[0]!.first} ${people[0]!.last}`)}" "${c}" site:facebook.com`,
+    // Name in quotes, city not: a quoted city drops most results; scoring still
+    // requires the city (or state) to appear in the result.
+    (c) => `"${titleCase(`${people[0]!.first} ${people[0]!.last}`)}" ${c} site:facebook.com`,
   );
   const needed = queries.length * config.searchCentsPerQuery;
   const house = await houseSpendThisMonth(db);

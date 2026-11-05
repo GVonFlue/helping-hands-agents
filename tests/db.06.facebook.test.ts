@@ -32,7 +32,7 @@ test('strong match: one pending finding linked to the list row, with confidence 
   const search = provider();
   const job = await run({ search }, { type: 'person.facebook', agent: 'scrub', input: { list_row_id: ROW.stoltenberg } });
   assert.equal(job.status, 'done', job.error);
-  assert.deepEqual(search.queries, ['"Karl Stoltenberg" "Wichita" site:facebook.com']);
+  assert.deepEqual(search.queries, ['"Karl Stoltenberg" Wichita site:facebook.com']);
   const f = (await admin.query(`select * from public.enrichment_results where list_row_id = $1`, [ROW.stoltenberg])).rows;
   assert.equal(f.length, 1);
   assert.equal(f[0].kind, 'facebook');

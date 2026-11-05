@@ -31,10 +31,27 @@ export function profileUrl(raw: string): string | null {
   if (parts[0] === 'people' && parts.length >= 3 && /^\d{5,}$/.test(parts[2]!)) {
     return `https://www.facebook.com/people/${parts[1]}/${parts[2]}`;
   }
-  if (parts.length !== 1) return null; // /name/posts/..., /name/photos, etc.
   const name = parts[0]!;
   if (RESERVED.has(name.toLowerCase()) || !/^[A-Za-z0-9.]{5,50}$/.test(name)) return null;
-  return `https://www.facebook.com/${name}`;
+  // A personal profile has letters in its username; all-digit ids are pages.
+  if (/^\d+$/.test(name)) return null;
+  if (parts.length === 1) return `https://www.facebook.com/${name}`;
+  // The person's own post or photo: /<username>/posts/..., /<username>/photos/...
+  // The username is the author's profile. Only used when the result's title is
+  // the owner's name (checked in scoreHit), so page posts and comments that
+  // merely mention the owner are never taken.
+  if (['posts', 'photos', 'videos'].includes(parts[1]!)) return `https://www.facebook.com/${name}`;
+  return null;
+}
+
+// True when the link is a post/photo rather than the profile page itself.
+export function isAuthoredContent(raw: string): boolean {
+  try {
+    const parts = new URL(raw).pathname.split('/').filter(Boolean);
+    return parts.length > 1 && ['posts', 'photos', 'videos'].includes(parts[1]!);
+  } catch {
+    return false;
+  }
 }
 
 const STATES: Record<string, string> = {
@@ -77,6 +94,15 @@ export function scoreHit(hit: SearchHit, s: Subject): Scored | null {
   if (nameWords.length > last.length + 3) return null; // a page or a long title, not a person's name
   let score = 0.35;
   signals.push('name');
+  if (isAuthoredContent(hit.url)) {
+    // A post's title is its author. Require the title to be the name alone and
+    // the username to contain the last name, so a post merely about or
+    // mentioning the owner is never mistaken for their profile.
+    const username = url.split('/').pop()!.toUpperCase().replace(/[^A-Z]/g, '');
+    const lastJoined = s.person.last.replace(/[^A-Z]/g, '');
+    if (nameWords.length > last.length + 2 || !username.includes(lastJoined)) return null;
+    signals.push('from their own post');
+  }
 
   if (s.person.middle) {
     const mid = s.person.middle[0]!;
