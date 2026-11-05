@@ -99,6 +99,29 @@ test('a CRM "Find info" click puts that owner at the front of the next batch', a
   assert.equal(ask.result.queued_for_next_batch, true);
 });
 
+test('"Find the people behind an LLC" goes through skip trace (SOS is behind a CAPTCHA) and queues a batch soon', async () => {
+  const job = await run({ tracerfy: tf }, { type: 'entity.lookup', agent: 'scrub', input: { entity_id: '40000000-0000-0000-0000-000000000001' } });
+  assert.equal(job.status, 'done', job.error);
+  assert.equal(job.result.queued_for_next_batch, true);
+  assert.equal(job.result.rows, 1);
+  // (the Find info test above already made this quarter-hour's planner; the harness cancels leftovers between tests)
+  const p = (await admin.query(`select input, run_after > now() + interval '14 minutes' as later from public.agent_jobs where job_type = 'plan.skiptrace' and idempotency_key like 'plan.skiptrace:asked:%' order by created_at desc limit 1`)).rows[0];
+  assert.deepEqual(p.input, { limit: 0 });
+  assert.equal(p.later, true, 'runs after the slot ends');
+});
+
+test('owners Francis asked about go out even with a daily limit of 0', async () => {
+  const biz = await HH();
+  const plan = await run({ tracerfy: tf }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 0 } });
+  assert.equal(plan.status, 'done', plan.error);
+  assert.equal(plan.result.asked, 2, 'Quintanilla (Find info) + Acme (LLC button)');
+  const subs = (await admin.query(`select input from public.agent_jobs where business_id = $1 and job_type = 'skiptrace.submit' and status = 'queued'`, [biz])).rows;
+  const ids = subs.flatMap((x) => x.input.list_row_ids);
+  assert.deepEqual(new Set(ids), new Set([ROW.quint, ROW.acme]));
+  // Park these so the next test sees a clean plan.
+  await admin.query(`update public.agent_jobs set status = 'cancelled' where job_type = 'skiptrace.submit' and status = 'queued'`);
+});
+
 test('plan.skiptrace: normal trace for people, advanced for companies and probate; nothing spent yet', async () => {
   const biz = await HH();
   const plan = await run({ tracerfy: tf }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 50 } });

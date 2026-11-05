@@ -54,34 +54,45 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
   const left = await budgetLeft(db, { config, businessId: job.business_id });
   const perRow = estimateCents('advanced', 1, config.skiptraceDnc); // worst case per owner
   const affordable = Math.floor(left / perRow);
-  const limit = Math.min(Number((job.input as { limit?: number }).limit ?? config.skiptraceDailyLimit), affordable, 500);
-  if (limit <= 0) {
-    return { status: 'done', result: { skipped: left <= 0 ? "Francis's Scrub budget is $0 or used up" : 'daily limit is 0', budget_left_cents: left } };
+  // Owners Francis asked about (CRM buttons) go regardless of the daily limit,
+  // as many as the budget covers. The daily limit only caps the automatic picks.
+  const autoLimit = Math.max(0, Number((job.input as { limit?: number }).limit ?? config.skiptraceDailyLimit));
+  const askedLimit = Math.min(affordable, 500);
+  if (affordable <= 0) {
+    return { status: 'done', result: { skipped: "Francis's Scrub budget is $0 or used up", budget_left_cents: left } };
   }
   const [bandLo, bandHi] = config.skiptraceFirstBand;
 
-  const { rows } = await db.query(
+  const { rows: candidates } = await db.query(
     `with owners as (
        select distinct on (r.owner_key)
               r.id, r.owner_key, r.bucket, r.vendor_rank, r.owner_name, r.raw,
               ${PROBATE_SQL('r')} as probate,
               ${DOORS_SQL('r')} as doors,
-              exists (select 1 from public.agent_jobs pl
-                       where pl.business_id = r.business_id and pl.job_type = 'person.lookup' and pl.status = 'done'
-                         and pl.input ->> 'list_row_id' = r.id::text) as asked
+              (exists (select 1 from public.agent_jobs pl
+                        where pl.business_id = r.business_id and pl.job_type = 'person.lookup' and pl.status = 'done'
+                          and pl.input ->> 'list_row_id' = r.id::text)
+               or (r.entity_id is not null and exists (
+                     select 1 from public.agent_jobs el
+                      where el.business_id = r.business_id and el.job_type = 'entity.lookup' and el.status = 'done'
+                        and (el.result ->> 'queued_for_next_batch')::boolean
+                        and el.input ->> 'entity_id' = r.entity_id::text))) as asked
          from public.list_rows r
         where r.business_id = $1 and r.owner_key is not null and r.property_address is not null
           and not ${TRACED_SQL('r')}
         order by r.owner_key, r.vendor_rank nulls last
      )
      select * from owners o
-      where not (o.bucket = 'entity' and o.doors >= $5)
+      where o.asked or not (o.bucket = 'entity' and o.doors >= $5)
       order by o.asked desc,
                case when o.vendor_rank between $3 and $4 then 0 when o.vendor_rank < $3 then 1 else 2 end,
                (o.doors >= 2) desc, o.vendor_rank nulls last
       limit $2`,
-    [job.business_id, limit, bandLo, bandHi, config.skipBigCompanyDoors],
+    [job.business_id, askedLimit + autoLimit, bandLo, bandHi, config.skipBigCompanyDoors],
   );
+  const askedRows = candidates.filter((r) => r.asked).slice(0, askedLimit);
+  const autoRows = candidates.filter((r) => !r.asked).slice(0, Math.max(0, Math.min(autoLimit, affordable - askedRows.length)));
+  const rows = [...askedRows, ...autoRows];
 
   const normal: string[] = [];
   const advanced: string[] = [];
@@ -93,7 +104,7 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
   const day = new Date().toISOString().slice(0, 10);
   return {
     status: 'done',
-    result: { normal: normal.length, advanced: advanced.length, budget_left_cents: isTestMode(config) ? 'test mode' : left },
+    result: { normal: normal.length, advanced: advanced.length, asked: askedRows.length, budget_left_cents: isTestMode(config) ? 'test mode' : left },
     write: async (tx) => {
       let queued = 0;
       for (const [type, ids] of [['normal', normal], ['advanced', advanced]] as const) {
@@ -357,10 +368,43 @@ export const personLookup: Handler = async ({ db, job, config, tracerfy }) => {
   );
   if (!rows[0]) return { status: 'failed', error: 'list row not found in this business' };
   if (rows[0].traced) return { status: 'done', result: { skipped: 'owner already looked up' } };
-  // Lookups run in daily batches (2¢ a hit instead of 10¢ one at a time); the
-  // planner puts rows someone asked about at the front of the next batch.
-  return { status: 'done', result: { queued_for_next_batch: true } };
+  // Lookups run in batches (2¢ a hit instead of 10¢ one at a time). A batch for
+  // everything asked about goes out within about 15 minutes.
+  return { status: 'done', result: { queued_for_next_batch: true }, write: (tx) => queueAskedBatch(tx, job.business_id) };
 };
+
+// entity.lookup (CRM "Find the people behind an LLC"): the Kansas SOS search is
+// behind a CAPTCHA, so the LLC's property rows go through Tracerfy's advanced
+// trace instead, which finds the people behind the owner of record.
+export async function entityViaSkiptrace(ctx: Ctx, entityId: string): Promise<import('../types.ts').Outcome> {
+  const { db, job, config } = ctx;
+  const left = await budgetLeft(db, { config, businessId: job.business_id });
+  if (left <= 0) {
+    return { status: 'blocked', error: "LLC lookups use paid skip trace: Francis's Scrub budget for this month is $0 or used up. Set it in Settings.", result: { budget_left_cents: left } };
+  }
+  const { rows } = await db.query(
+    `select count(*)::int as n, count(*) filter (where not ${TRACED_SQL('r')})::int as todo
+       from public.list_rows r where r.business_id = $1 and r.entity_id = $2 and r.property_address is not null`,
+    [job.business_id, entityId],
+  );
+  if (!rows[0].n) return { status: 'done', result: { skipped: 'no list rows for this LLC' } };
+  if (!rows[0].todo) return { status: 'done', result: { skipped: 'LLC already looked up' } };
+  return { status: 'done', result: { queued_for_next_batch: true, via: 'skip trace (advanced)', rows: rows[0].todo }, write: (tx) => queueAskedBatch(tx, job.business_id) };
+}
+
+async function queueAskedBatch(tx: Tx, businessId: string): Promise<void> {
+  // One planner per quarter hour, however many owners were clicked; it runs
+  // after the clicks have been processed. limit 0 = only owners someone asked about.
+  // Runs 15 minutes after its slot ends, so every click in the slot is processed first.
+  const slotStart = Math.floor(Date.now() / 900_000) * 900_000;
+  const slot = new Date(slotStart).toISOString().slice(0, 16);
+  await tx.query(
+    `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
+     values ($1, 'manager', 'plan.skiptrace', '{"limit": 0}'::jsonb, $2, 'queued', to_timestamp($3::double precision / 1000))
+     on conflict (idempotency_key) do nothing`,
+    [businessId, `plan.skiptrace:asked:${businessId}:${slot}`, slotStart + 1_800_000],
+  );
+}
 
 // ---- helpers ------------------------------------------------------------------
 

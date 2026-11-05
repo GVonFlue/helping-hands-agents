@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Tx } from '../db.ts';
 import { UUID_RE, type Handler } from '../types.ts';
+import { entityViaSkiptrace } from './skiptrace.ts';
 
 const Input = z.object({ entity_id: z.string().regex(UUID_RE) });
 
@@ -22,7 +23,8 @@ export interface EntitySource {
 }
 
 export function makeEntityLookup(source: EntitySource | null): Handler {
-  return async ({ db, job, config }) => {
+  return async (ctx) => {
+    const { db, job, config } = ctx;
     const parsed = Input.safeParse(job.input);
     if (!parsed.success) return { status: 'failed', error: 'input needs entity_id (uuid)' };
     const { rows } = await db.query(
@@ -32,6 +34,8 @@ export function makeEntityLookup(source: EntitySource | null): Handler {
     );
     const entity = rows[0];
     if (!entity) return { status: 'failed', error: 'entity not found' };
+    // Skip trace has its own never-twice check per owner; the 90-day cache is for SOS lookups.
+    if (!source && ctx.tracerfy) return entityViaSkiptrace(ctx, entity.id);
     if (entity.fresh) {
       return { status: 'done', result: { skipped: 'checked within 90 days', last_checked_at: entity.last_checked_at } };
     }
