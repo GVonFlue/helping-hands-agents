@@ -7,6 +7,7 @@ import type { Db } from './db.ts';
 //   report.weekly  last full Mon–Sun week, from Monday 7am Central
 //   plan.drafts    hourly: queue first drafts for findings Francis promoted
 //   plan.facebook  daily from 8am Central: queue the next owners to search
+//   plan.skiptrace daily from 9am Central: the next skip-trace batch (Francis's budget)
 
 let lastRun = 0;
 
@@ -14,6 +15,7 @@ export async function runScheduler(db: Db, config: Config, force = false): Promi
   if (!force && Date.now() - lastRun < 5 * 60_000) return;
   lastRun = Date.now();
   const facebookOn = !!config.searchProvider && config.facebookDailyLimit > 0;
+  const skiptraceOn = !!config.tracerfyApiKey && config.skiptraceDailyLimit > 0;
   await db.query(
     `with biz as (
        select s.business_id from public.agent_settings s
@@ -39,10 +41,15 @@ export async function runScheduler(db: Db, config: Config, force = false): Promi
               'plan.facebook:' || b.business_id || ':' || c.local::date
          from biz b, clock c
         where $2::boolean and extract(hour from c.local) >= 8
+       union all
+       select b.business_id, 'plan.skiptrace', jsonb_build_object('limit', $3::int),
+              'plan.skiptrace:' || b.business_id || ':' || c.local::date
+         from biz b, clock c
+        where $4::boolean and extract(hour from c.local) >= 9
      )
      insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status)
      select business_id, 'manager', job_type, input, key, 'queued' from wanted
      on conflict (idempotency_key) do nothing`,
-    [config.facebookDailyLimit, facebookOn],
+    [config.facebookDailyLimit, facebookOn, config.skiptraceDailyLimit, skiptraceOn],
   );
 }

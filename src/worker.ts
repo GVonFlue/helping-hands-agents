@@ -2,15 +2,16 @@ import { RetryableError } from './ai.ts';
 import type { Config } from './config.ts';
 import { lockKey, withTx, type Db } from './db.ts';
 import { log } from './log.ts';
-import { claimJobs, finishJob, reapStale, requeueJob } from './queue.ts';
+import { claimJobs, finishJob, reapStale, requeueJob, waitJob } from './queue.ts';
 import { handlers } from './registry.ts';
 import { runScheduler } from './scheduler.ts';
 import type { Llm } from './ai.ts';
 import type { SearchProvider } from './search.ts';
+import type { Tracerfy } from './tracerfy.ts';
 import { emptySpend } from './spend.ts';
 import type { Ctx, Job } from './types.ts';
 
-export type Deps = { db: Db; config: Config; llm: Llm | null; search: SearchProvider | null };
+export type Deps = { db: Db; config: Config; llm: Llm | null; search: SearchProvider | null; tracerfy: Tracerfy | null };
 
 // Runs one claimed job to a final state. Never throws.
 export async function runJob(deps: Deps, job: Job): Promise<string> {
@@ -54,6 +55,10 @@ export async function runJob(deps: Deps, job: Job): Promise<string> {
       });
       if (!stillOurs) log('warn', 'job was no longer ours; findings rolled back', { job: job.id });
       return stillOurs ? 'done' : 'lost';
+    }
+    if (out.status === 'wait') {
+      await waitJob(db, config.workerId, job.id, out.delaySec, out.result ?? {});
+      return 'waiting';
     }
     await finishJob(db, config.workerId, job.id, {
       status: out.status,
@@ -103,7 +108,7 @@ export async function tick(deps: Deps): Promise<number> {
 }
 
 export async function loop(deps: Deps, signal: AbortSignal): Promise<void> {
-  log('info', 'worker started', { worker: deps.config.workerId, ai: !!deps.llm, search: deps.search?.name ?? 'off' });
+  log('info', 'worker started', { worker: deps.config.workerId, ai: !!deps.llm, search: deps.search?.name ?? 'off', skiptrace: deps.tracerfy ? deps.config.tracerfyBase : 'off' });
   let idleTicks = 0;
   while (!signal.aborted) {
     let claimed = 0;

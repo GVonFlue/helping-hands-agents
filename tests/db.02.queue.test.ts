@@ -28,7 +28,7 @@ test('a retryable error requeues the job with a delay, then fails after max atte
     const [claimed] = await claimJobs(agentDb, cfg.workerId, cfg.agents, 1);
     assert.equal(claimed!.id, first.id);
     const { runJob } = await import('../src/worker.ts');
-    await runJob({ db: agentDb, config: cfg, llm: null, search: null }, claimed!);
+    await runJob({ db: agentDb, config: cfg, llm: null, search: null, tracerfy: null }, claimed!);
     const last = (await admin.query('select status, error from public.agent_jobs where id = $1', [first.id])).rows[0];
     assert.equal(last.status, 'failed');
   } finally {

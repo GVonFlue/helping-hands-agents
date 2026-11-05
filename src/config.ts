@@ -44,5 +44,14 @@ export function loadConfig() {
     facebookMinConfidence: num('FACEBOOK_MIN_CONFIDENCE', 0.6),
 
     entityCacheDays: 90,
+
+    // Skip trace (Tracerfy). Billed to Francis's Scrub cap (agent_budget_left).
+    tracerfyApiKey: process.env.TRACERFY_API_KEY || '',
+    tracerfyBase: process.env.TRACERFY_BASE || 'https://tracerfy.com', // https://mock.tracerfy.com = free test data
+    skiptraceDailyLimit: num('SKIPTRACE_DAILY_LIMIT', 20),
+    skiptraceDnc: (process.env.SKIPTRACE_DNC ?? 'true') !== 'false',
+    // Rank band Francis wants done first (just past his mail cutoff).
+    skiptraceFirstBand: (process.env.SKIPTRACE_FIRST_BAND || '2501-10000').split('-').map(Number) as [number, number],
+    skipBigCompanyDoors: num('SKIP_BIG_COMPANY_DOORS', 20),
   };
 }

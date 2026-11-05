@@ -2,6 +2,7 @@ import type { Config } from './config.ts';
 import type { Db, Tx } from './db.ts';
 import type { Llm } from './ai.ts';
 import type { SearchProvider } from './search.ts';
+import type { Tracerfy } from './tracerfy.ts';
 import type { Spend } from './spend.ts';
 
 export type Job = {
@@ -21,6 +22,7 @@ export type Ctx = {
   config: Config;
   llm: Llm | null; // null when no API key is configured
   search: SearchProvider | null; // null until a provider is signed off
+  tracerfy: Tracerfy | null; // null until TRACERFY_API_KEY is set
   spend: Spend; // house spend for this job; saved into result.spend
 };
 
@@ -35,6 +37,8 @@ export type Outcome =
       write?: (tx: Tx) => Promise<Record<string, unknown> | void>;
     }
   | { status: 'blocked'; error: string; result?: Record<string, unknown> }
+  // Waiting on an outside job (a Tracerfy batch): back in the queue without using an attempt.
+  | { status: 'wait'; delaySec: number; result?: Record<string, unknown> }
   | { status: 'failed'; error: string };
 
 export type Handler = (ctx: Ctx) => Promise<Outcome>;

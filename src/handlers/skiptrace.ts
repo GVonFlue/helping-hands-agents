@@ -1,0 +1,355 @@
+import { z } from 'zod';
+import type { Db, Tx } from '../db.ts';
+import { DOORS_SQL, PROBATE_SQL } from '../listSignals.ts';
+import { firstNameFromRaw, parseOwnerName, titleCase } from '../names.ts';
+import { clientBudgetLeft } from '../spend.ts';
+import { addressKey, contactsFromRow, type TraceRecord, type TraceType } from '../tracerfy.ts';
+import { UUID_RE, type Ctx, type Handler } from '../types.ts';
+
+// Paid skip trace (Tracerfy), billed to Francis's Scrub cap.
+//
+//   plan.skiptrace (manager, daily)  picks owners, best first, never twice
+//   skiptrace.submit (scrub)         uploads one batch (normal or advanced)
+//   skiptrace.collect (scrub)        waits for it, saves emails + LLC members,
+//                                    sends every phone to the DNC scrub
+//   skiptrace.dnc (scrub)            waits for the scrub, saves phones with
+//                                    do_not_call set from the scrub
+//   person.lookup (scrub)            a CRM "Find info" click: queues that row
+//                                    for the next batch
+//
+// Normal trace (name + mailing address) for individual owners. Advanced trace
+// (address only: finds the current owner) for companies, trusts and probate
+// rows, where the person on the list isn't the one to reach.
+// Every paid step checks agent_budget_left('scrub') first, and every job records
+// what it spent in cost_cents.
+
+const CENTS_PER_CREDIT = 2;
+const CREDITS: Record<TraceType, number> = { normal: 1, advanced: 2 };
+const DNC_CREDITS_PER_OWNER_ESTIMATE = 3; // up to ~3 phones each
+
+// Tracerfy's mock server (fake data, no charges): skip the budget gate and record $0.
+// Against the real server the gate always applies.
+export const isTestMode = (config: Ctx['config']) => /(^|\/\/)mock\./.test(config.tracerfyBase);
+const budgetLeft = async (db: Db, ctx: { config: Ctx['config']; businessId: string }) =>
+  isTestMode(ctx.config) ? Number.MAX_SAFE_INTEGER : clientBudgetLeft(db, ctx.businessId, 'scrub');
+
+export function estimateCents(type: TraceType, rows: number, dnc: boolean): number {
+  return rows * (CREDITS[type] + (dnc ? DNC_CREDITS_PER_OWNER_ESTIMATE : 0)) * CENTS_PER_CREDIT;
+}
+
+// Owners already sent to Tracerfy (any row with the same owner_key), so a
+// repeat owner on next month's list is never paid for twice.
+const TRACED_SQL = (r: string) => `exists (
+  select 1 from public.agent_jobs j, public.list_rows r2
+   where j.business_id = ${r}.business_id and j.job_type = 'skiptrace.submit'
+     and j.status in ('queued', 'running', 'done')
+     and (j.input -> 'list_row_ids') ? r2.id::text
+     and r2.owner_key = ${r}.owner_key)`;
+
+// ---- plan.skiptrace -----------------------------------------------------------
+
+export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
+  if (!tracerfy) return { status: 'done', result: { skipped: 'Tracerfy is not connected' } };
+  const left = await budgetLeft(db, { config, businessId: job.business_id });
+  const perRow = estimateCents('advanced', 1, config.skiptraceDnc); // worst case per owner
+  const affordable = Math.floor(left / perRow);
+  const limit = Math.min(Number((job.input as { limit?: number }).limit ?? config.skiptraceDailyLimit), affordable, 500);
+  if (limit <= 0) {
+    return { status: 'done', result: { skipped: left <= 0 ? "Francis's Scrub budget is $0 or used up" : 'daily limit is 0', budget_left_cents: left } };
+  }
+  const [bandLo, bandHi] = config.skiptraceFirstBand;
+
+  const { rows } = await db.query(
+    `with owners as (
+       select distinct on (r.owner_key)
+              r.id, r.owner_key, r.bucket, r.vendor_rank, r.owner_name, r.raw,
+              ${PROBATE_SQL('r')} as probate,
+              ${DOORS_SQL('r')} as doors,
+              exists (select 1 from public.agent_jobs pl
+                       where pl.business_id = r.business_id and pl.job_type = 'person.lookup' and pl.status = 'done'
+                         and pl.input ->> 'list_row_id' = r.id::text) as asked
+         from public.list_rows r
+        where r.business_id = $1 and r.owner_key is not null and r.property_address is not null
+          and not ${TRACED_SQL('r')}
+        order by r.owner_key, r.vendor_rank nulls last
+     )
+     select * from owners o
+      where not (o.bucket = 'entity' and o.doors >= $5)
+      order by o.asked desc,
+               case when o.vendor_rank between $3 and $4 then 0 when o.vendor_rank < $3 then 1 else 2 end,
+               (o.doors >= 2) desc, o.vendor_rank nulls last
+      limit $2`,
+    [job.business_id, limit, bandLo, bandHi, config.skipBigCompanyDoors],
+  );
+
+  const normal: string[] = [];
+  const advanced: string[] = [];
+  for (const r of rows) {
+    const person = parseOwnerName(r.owner_name, firstNameFromRaw(r.raw))[0];
+    if (r.bucket === 'entity' || r.probate || !person) advanced.push(r.id);
+    else normal.push(r.id);
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  return {
+    status: 'done',
+    result: { normal: normal.length, advanced: advanced.length, budget_left_cents: isTestMode(config) ? 'test mode' : left },
+    write: async (tx) => {
+      let queued = 0;
+      for (const [type, ids] of [['normal', normal], ['advanced', advanced]] as const) {
+        if (!ids.length) continue;
+        const r = await tx.query(
+          `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status)
+           values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, $3, 'queued') on conflict (idempotency_key) do nothing`,
+          [job.business_id, JSON.stringify({ trace_type: type, list_row_ids: ids }), `skiptrace.submit:${job.business_id}:${day}:${type}:${job.id}`],
+        );
+        queued += r.rowCount ?? 0;
+      }
+      return { batches_queued: queued };
+    },
+  };
+};
+
+// ---- skiptrace.submit -------------------------------------------------------
+
+const SubmitInput = z.object({ trace_type: z.enum(['normal', 'advanced']), list_row_ids: z.array(z.string().regex(UUID_RE)).min(1).max(500) });
+
+export const skiptraceSubmit: Handler = async ({ db, job, config, tracerfy }) => {
+  const parsed = SubmitInput.safeParse(job.input);
+  if (!parsed.success) return { status: 'failed', error: 'input needs trace_type and list_row_ids' };
+  if (!tracerfy) return { status: 'blocked', error: 'Tracerfy is not connected (TRACERFY_API_KEY not set).' };
+  const { trace_type, list_row_ids } = parsed.data;
+
+  const { rows } = await db.query(
+    `select id, owner_name, raw, property_address, property_city, property_state, property_zip,
+            mailing_address, mailing_city, mailing_state, mailing_zip
+       from public.list_rows where business_id = $1 and id = any($2::uuid[])`,
+    [job.business_id, list_row_ids],
+  );
+  const records: TraceRecord[] = [];
+  for (const r of rows) {
+    const rec: TraceRecord = {
+      ref: r.id, address: r.property_address ?? '', city: r.property_city ?? '',
+      state: (r.property_state ?? 'KS').slice(0, 2), zip: String(r.property_zip ?? '').slice(0, 5),
+    };
+    if (trace_type === 'normal') {
+      const p = parseOwnerName(r.owner_name, firstNameFromRaw(r.raw))[0];
+      if (!p || !r.mailing_address) continue;
+      Object.assign(rec, {
+        first_name: titleCase(p.first), last_name: titleCase(p.last),
+        mail_address: r.mailing_address, mail_city: r.mailing_city ?? '',
+        mail_state: (r.mailing_state ?? '').slice(0, 2), mail_zip: String(r.mailing_zip ?? '').slice(0, 5),
+      });
+    }
+    if (rec.address && rec.city) records.push(rec);
+  }
+  if (!records.length) return { status: 'done', result: { skipped: 'no rows with enough address data' } };
+
+  // The budget check right before the paid call (handoff rule).
+  const estimate = estimateCents(trace_type, records.length, config.skiptraceDnc);
+  const left = await budgetLeft(db, { config, businessId: job.business_id });
+  if (left < estimate) {
+    return { status: 'blocked', error: `Not enough Scrub budget left this month ($${(left / 100).toFixed(2)} left, batch needs up to $${(estimate / 100).toFixed(2)}).`, result: { budget_left_cents: left, estimate_cents: estimate } };
+  }
+
+  const { queueId } = await tracerfy.submitTrace(trace_type, records);
+  const traceCents = isTestMode(config) ? 0 : records.length * CREDITS[trace_type] * CENTS_PER_CREDIT;
+  return {
+    status: 'done',
+    // Held at the most this batch can cost until collect records the real charge.
+    costCents: traceCents,
+    result: { queue_id: queueId, trace_type, rows_sent: records.length, max_trace_cents: traceCents, test_mode: isTestMode(config) || undefined },
+    write: async (tx) => {
+      await tx.query(
+        `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
+         values ($1, 'scrub', 'skiptrace.collect', $2::jsonb, $3, 'queued', now() + interval '90 seconds')
+         on conflict (idempotency_key) do nothing`,
+        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type }), `skiptrace.collect:${queueId}`],
+      );
+    },
+  };
+};
+
+// ---- skiptrace.collect ------------------------------------------------------
+
+const CollectInput = z.object({ submit_job_id: z.string().regex(UUID_RE), queue_id: z.number(), trace_type: z.enum(['normal', 'advanced']) });
+
+type PendingPhone = { list_row_id: string; entity_id: string | null; phone: string; rank: number; flagged_dnc: boolean; litigator: boolean };
+
+export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) => {
+  const parsed = CollectInput.safeParse(job.input);
+  if (!parsed.success) return { status: 'failed', error: 'input needs submit_job_id, queue_id, trace_type' };
+  if (!tracerfy) return { status: 'blocked', error: 'Tracerfy is not connected (TRACERFY_API_KEY not set).' };
+  const { submit_job_id, queue_id, trace_type } = parsed.data;
+
+  const q = await tracerfy.getQueue(queue_id);
+  if (!q || q.pending) {
+    if (await olderThan(db, job.id, '3 hours')) return { status: 'failed', error: `Tracerfy batch ${queue_id} still not finished after 3 hours.` };
+    return { status: 'wait', delaySec: 90, result: { queue_id, waiting: q ? 'pending' : 'not listed yet' } };
+  }
+
+  const resultRows = await tracerfy.getQueueRows(queue_id);
+  const sub = await db.query(`select input from public.agent_jobs where id = $1`, [submit_job_id]);
+  const ids: string[] = sub.rows[0]?.input?.list_row_ids ?? [];
+  const { rows: listRows } = await db.query(
+    `select id, entity_id, property_address, property_city from public.list_rows where id = any($1::uuid[])`,
+    [ids],
+  );
+  const byRef = new Map(listRows.map((r) => [r.id as string, r]));
+  const byAddr = new Map(listRows.map((r) => [addressKey(r.property_address ?? '', r.property_city ?? ''), r]));
+
+  const confFactor = trace_type === 'advanced' ? 0.9 : 1;
+  const conf = (rank: number) => Math.round(Math.max(0.5, 0.9 - 0.1 * (rank - 1)) * confFactor * 100) / 100;
+  const emails: { list_row_id: string; entity_id: string | null; email: string; confidence: number }[] = [];
+  const members: { list_row_id: string; entity_id: string; name: string }[] = [];
+  const phones: PendingPhone[] = [];
+  let matched = 0;
+  let unmatched = 0;
+  let deceased = 0;
+
+  for (const raw of resultRows) {
+    const c = contactsFromRow(raw);
+    const lr = (c.ref && byRef.get(c.ref)) || byAddr.get(addressKey(c.address, c.city));
+    if (!lr) { unmatched++; continue; }
+    matched++;
+    // Normal trace on a person who has died: no one to reach at these numbers.
+    if (c.deceased && trace_type === 'normal') { deceased++; continue; }
+    for (const e of c.emails) emails.push({ list_row_id: lr.id, entity_id: lr.entity_id, email: e.email, confidence: conf(e.rank) });
+    for (const p of c.phones) phones.push({ list_row_id: lr.id, entity_id: lr.entity_id, phone: p.phone, rank: p.rank, flagged_dnc: p.flaggedDnc, litigator: c.litigator });
+    if (lr.entity_id) for (const n of c.names) members.push({ list_row_id: lr.id, entity_id: lr.entity_id, name: titleCase(n) });
+  }
+
+  const actualCents = isTestMode(config) ? 0 : q.creditsDeducted !== null ? q.creditsDeducted * CENTS_PER_CREDIT : null;
+  const uniquePhones = [...new Set(phones.map((p) => p.phone))];
+  let dncQueueId: number | null = null;
+  if (config.skiptraceDnc && uniquePhones.length) {
+    const est = uniquePhones.length * CENTS_PER_CREDIT;
+    const left = await budgetLeft(db, { config, businessId: job.business_id });
+    if (left >= est) dncQueueId = (await tracerfy.submitDnc(uniquePhones)).dncQueueId;
+  }
+  const source = `tracerfy ${trace_type} trace`;
+
+  return {
+    status: 'done',
+    lockKey: `skiptrace:${queue_id}`,
+    result: {
+      queue_id, rows_returned: resultRows.length, matched, unmatched, deceased_skipped: deceased,
+      emails: emails.length, entity_members: members.length, phones: phones.length,
+      dnc_queue_id: dncQueueId,
+      // Phones wait here until the DNC scrub comes back (skiptrace.dnc saves them).
+      pending_phones: phones,
+      phones_held_back: config.skiptraceDnc && !dncQueueId && phones.length ? 'budget ran out before the DNC scrub' : undefined,
+    },
+    write: async (tx) => {
+      // The submit job held the most the batch could cost; set what Tracerfy actually charged.
+      if (actualCents !== null) {
+        await tx.query(`update public.agent_jobs set cost_cents = $2 where id = $1`, [submit_job_id, actualCents]);
+      }
+      let saved = 0;
+      for (const e of emails) saved += await insertFinding(tx, job, { kind: 'email', value: e.email, list_row_id: e.list_row_id, entity_id: null, confidence: e.confidence, source, dnc: false });
+      for (const m of members) saved += await insertFinding(tx, job, { kind: 'entity_member', value: m.name, list_row_id: m.list_row_id, entity_id: m.entity_id, confidence: 0.7, source, dnc: false });
+      // DNC scrub off: save phones with Tracerfy's own flags (litigators always do-not-call).
+      if (!config.skiptraceDnc) {
+        for (const p of phones) saved += await insertFinding(tx, job, { kind: 'phone', value: p.phone, list_row_id: p.list_row_id, entity_id: null, confidence: conf(p.rank), source, dnc: p.flagged_dnc || p.litigator });
+      }
+      if (dncQueueId) {
+        await tx.query(
+          `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
+           values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
+           on conflict (idempotency_key) do nothing`,
+          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type }), `skiptrace.dnc:${dncQueueId}`],
+        );
+      }
+      return { findings_saved: saved, trace_cents: actualCents };
+    },
+  };
+};
+
+// ---- skiptrace.dnc ----------------------------------------------------------
+
+const DncInput = z.object({ collect_job_id: z.string().regex(UUID_RE), dnc_queue_id: z.number(), trace_type: z.enum(['normal', 'advanced']) });
+
+export const skiptraceDnc: Handler = async ({ db, job, config, tracerfy }) => {
+  const parsed = DncInput.safeParse(job.input);
+  if (!parsed.success) return { status: 'failed', error: 'input needs collect_job_id, dnc_queue_id, trace_type' };
+  if (!tracerfy) return { status: 'blocked', error: 'Tracerfy is not connected (TRACERFY_API_KEY not set).' };
+  const { collect_job_id, dnc_queue_id, trace_type } = parsed.data;
+
+  const q = await tracerfy.getDncQueue(dnc_queue_id);
+  if (!q || q.pending) {
+    if (await olderThan(db, job.id, '3 hours')) return { status: 'failed', error: `DNC scrub ${dnc_queue_id} still not finished after 3 hours.` };
+    return { status: 'wait', delaySec: 60, result: { dnc_queue_id, waiting: true } };
+  }
+  const col = await db.query(`select result from public.agent_jobs where id = $1`, [collect_job_id]);
+  const pending: PendingPhone[] = col.rows[0]?.result?.pending_phones ?? [];
+  const scrub = new Map(q.results.map((r) => [r.phone, r]));
+  const source = `tracerfy ${trace_type} trace, DNC scrubbed`;
+  const conf = (rank: number) => Math.round(Math.max(0.5, 0.9 - 0.1 * (rank - 1)) * (trace_type === 'advanced' ? 0.9 : 1) * 100) / 100;
+  const charged = q.creditsDeducted !== null ? q.creditsDeducted : new Set(pending.map((p) => p.phone)).size;
+
+  return {
+    status: 'done',
+    lockKey: `skiptrace-dnc:${dnc_queue_id}`,
+    costCents: isTestMode(config) ? 0 : charged * CENTS_PER_CREDIT,
+    result: { dnc_queue_id, phones: pending.length, scrubbed: q.results.length },
+    write: async (tx) => {
+      let saved = 0;
+      let flagged = 0;
+      for (const p of pending) {
+        const s = scrub.get(p.phone);
+        // Not in the scrub results = unknown = treat as Do Not Call.
+        const dnc = !s || !s.clean || s.litigator || p.litigator || p.flagged_dnc;
+        if (dnc) flagged++;
+        saved += await insertFinding(tx, job, { kind: 'phone', value: p.phone, list_row_id: p.list_row_id, entity_id: null, confidence: conf(p.rank), source, dnc });
+      }
+      return { findings_saved: saved, do_not_call: flagged };
+    },
+  };
+};
+
+// ---- person.lookup (CRM "Find info" button) ----------------------------------
+
+const LookupInput = z.object({ list_row_id: z.string().regex(UUID_RE) });
+
+export const personLookup: Handler = async ({ db, job, config, tracerfy }) => {
+  const parsed = LookupInput.safeParse(job.input);
+  if (!parsed.success) return { status: 'failed', error: 'input needs list_row_id (uuid)' };
+  const left = await budgetLeft(db, { config, businessId: job.business_id });
+  if (!tracerfy) return { status: 'blocked', error: 'Skip trace is not connected yet (Tracerfy key not set).', result: { budget_left_cents: left } };
+  if (left <= 0) {
+    return { status: 'blocked', error: "Skip trace is off: Francis's Scrub budget for this month is $0 or used up. Set it in Settings.", result: { budget_left_cents: left } };
+  }
+  const { rows } = await db.query(
+    `select r.id, ${TRACED_SQL('r')} as traced from public.list_rows r where r.id = $1 and r.business_id = $2`,
+    [parsed.data.list_row_id, job.business_id],
+  );
+  if (!rows[0]) return { status: 'failed', error: 'list row not found in this business' };
+  if (rows[0].traced) return { status: 'done', result: { skipped: 'owner already looked up' } };
+  // Lookups run in daily batches (2¢ a hit instead of 10¢ one at a time); the
+  // planner puts rows someone asked about at the front of the next batch.
+  return { status: 'done', result: { queued_for_next_batch: true } };
+};
+
+// ---- helpers ------------------------------------------------------------------
+
+async function insertFinding(
+  tx: Tx,
+  job: Ctx['job'],
+  f: { kind: 'email' | 'phone' | 'entity_member'; value: string; list_row_id: string; entity_id: string | null; confidence: number; source: string; dnc: boolean },
+): Promise<number> {
+  // Matches the migration 14 duplicate guard, so a repeat is skipped rather than
+  // failing the whole batch.
+  const r = await tx.query(
+    `insert into public.enrichment_results
+       (business_id, job_id, list_row_id, entity_id, kind, value, confidence, source, do_not_call, status)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+     on conflict (business_id, kind, lower(value), coalesce(person_id, entity_id, list_row_id)) where status <> 'rejected'
+     do nothing`,
+    [job.business_id, job.id, f.list_row_id, f.entity_id, f.kind, f.value, f.confidence, f.source, f.dnc],
+  );
+  return r.rowCount ?? 0;
+}
+
+async function olderThan(db: Db, jobId: string, interval: string): Promise<boolean> {
+  const { rows } = await db.query(`select created_at < now() - $2::interval as old from public.agent_jobs where id = $1`, [jobId, interval]);
+  return rows[0]?.old === true;
+}

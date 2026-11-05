@@ -5,6 +5,7 @@ import { loadConfig, type Config } from '../src/config.ts';
 import { createPool } from '../src/db.ts';
 import type { Llm, LlmRequest } from '../src/ai.ts';
 import type { SearchHit, SearchProvider } from '../src/search.ts';
+import type { Tracerfy } from '../src/tracerfy.ts';
 import { claimJobs } from '../src/queue.ts';
 import { runJob, type Deps } from '../src/worker.ts';
 import type { Job } from '../src/types.ts';
@@ -53,7 +54,7 @@ let seq = 0;
 // Queues one job (as the CRM or Manager would), claims it with the worker's
 // login, and runs it. Returns the final job row.
 export async function run(
-  deps: Partial<Deps> & { config?: Config },
+  deps: Partial<Deps> & { config?: Config; tracerfy?: Tracerfy | null },
   job: { type: string; agent: Job['agent']; input: Record<string, unknown>; key?: string },
 ) {
   const biz = await HH();
@@ -69,10 +70,29 @@ export async function run(
   const claimed = await claimJobs(agentDb, cfg.workerId, cfg.agents, 1);
   assert.equal(claimed.length, 1, 'worker claimed the job');
   assert.equal(claimed[0]!.id, ins.rows[0].id);
-  await runJob({ db: agentDb, config: cfg, llm: deps.llm ?? null, search: deps.search ?? null }, claimed[0]!);
+  await runJob({ db: agentDb, config: cfg, llm: deps.llm ?? null, search: deps.search ?? null, tracerfy: deps.tracerfy ?? null }, claimed[0]!);
   return (await admin.query(`select * from public.agent_jobs where id = $1`, [ins.rows[0].id])).rows[0];
 }
 
 export async function count(sql: string, params: unknown[] = []): Promise<number> {
   return Number((await admin.query(`select count(*)::int as n from (${sql}) x`, params)).rows[0].n);
+}
+
+// Runs an already-queued job (e.g. one a previous job queued) by id.
+export async function runExisting(deps: Partial<Deps> & { config?: Config; tracerfy?: Tracerfy | null }, jobId: string) {
+  await admin.query(`update public.agent_jobs set run_after = now() - interval '2 hours' where id = $1`, [jobId]);
+  // Hold everything else back for this claim, then restore.
+  const held = await admin.query(
+    `update public.agent_jobs set run_after = run_after + interval '100 years' where status = 'queued' and id <> $1 returning id`,
+    [jobId],
+  );
+  const cfg = deps.config ?? config();
+  try {
+    const claimed = await claimJobs(agentDb, cfg.workerId, cfg.agents, 1);
+    assert.equal(claimed[0]?.id, jobId, 'worker claimed the expected job');
+    await runJob({ db: agentDb, config: cfg, llm: deps.llm ?? null, search: deps.search ?? null, tracerfy: deps.tracerfy ?? null }, claimed[0]!);
+  } finally {
+    await admin.query(`update public.agent_jobs set run_after = run_after - interval '100 years' where id = any($1)`, [held.rows.map((r) => r.id)]);
+  }
+  return (await admin.query(`select * from public.agent_jobs where id = $1`, [jobId])).rows[0];
 }

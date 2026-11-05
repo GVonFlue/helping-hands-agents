@@ -74,3 +74,15 @@ export async function enqueue(
   );
   return rowCount === 1;
 }
+
+// Put a job back to wait on something outside (a vendor batch) without counting
+// it as a failed attempt.
+export async function waitJob(db: Db, workerId: string, jobId: string, delaySec: number, result: Record<string, unknown>): Promise<void> {
+  await db.query(
+    `update public.agent_jobs
+        set status = 'queued', run_after = now() + make_interval(secs => $3), locked_at = null, locked_by = null,
+            attempts = greatest(attempts - 1, 0), result = $4::jsonb, error = null
+      where id = $1 and status = 'running' and locked_by = $2`,
+    [jobId, workerId, delaySec, JSON.stringify(result)],
+  );
+}

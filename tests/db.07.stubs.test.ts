@@ -7,11 +7,10 @@ import { makeEntityLookup, type EntitySource } from '../src/handlers/entityLooku
 const CACHED = '40000000-0000-0000-0000-000000000001';
 const FRESH = '40000000-0000-0000-0000-000000000002';
 
-test('person.lookup is parked as blocked with a clear reason', async () => {
+test('person.lookup without Tracerfy connected is blocked with a clear reason', async () => {
   const job = await run({}, { type: 'person.lookup', agent: 'scrub', input: { list_row_id: '20000000-0000-0000-0000-000000000003' } });
   assert.equal(job.status, 'blocked');
-  assert.match(job.error, /skip trace is off/);
-  assert.equal(job.result.budget_left_cents, 0);
+  assert.match(job.error, /not connected/);
   assert.equal(job.cost_cents, 0);
 });
 

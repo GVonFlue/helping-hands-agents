@@ -3,6 +3,7 @@ import { loadConfig } from './config.ts';
 import { createPool } from './db.ts';
 import { log } from './log.ts';
 import { braveSearch, rateLimited, serperSearch } from './search.ts';
+import { tracerfyClient } from './tracerfy.ts';
 import { loop } from './worker.ts';
 
 // Startup problems get one clear log line (never the connection string), then a
@@ -70,6 +71,7 @@ const provider =
       ? braveSearch(config.braveApiKey)
       : null;
 const search = provider ? rateLimited(provider, config.searchMinIntervalMs) : null;
+const tracerfy = config.tracerfyApiKey ? tracerfyClient(config.tracerfyApiKey, config.tracerfyBase) : null;
 
 const stop = new AbortController();
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
@@ -79,5 +81,5 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   });
 }
 
-await loop({ db, config, llm, search }, stop.signal);
+await loop({ db, config, llm, search, tracerfy }, stop.signal);
 await db.end();
