@@ -19,7 +19,10 @@ export function createPool(url: string): Db {
     : process.env.DATABASE_CA
       ? { ca: process.env.DATABASE_CA }
       : { rejectUnauthorized: false };
-  return new pg.Pool({ connectionString: url, max: 5, ssl, application_name: 'helping-hands-agents' });
+  // A ?sslmode=require copied from Supabase would override `ssl` and turn on
+  // strict certificate checks pg can't satisfy without the CA; drop it.
+  const cleaned = url.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
+  return new pg.Pool({ connectionString: cleaned, max: 5, ssl, application_name: 'helping-hands-agents' });
 }
 
 export async function withTx<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {
