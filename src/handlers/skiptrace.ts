@@ -206,6 +206,15 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
   let matched = 0;
   let unmatched = 0;
   let deceased = 0;
+  // What Tracerfy actually sent, to check the column mapping (no personal data).
+  const parsedAll = resultRows.map((r) => contactsFromRow(r));
+  const shape = {
+    columns: Object.keys(resultRows[0] ?? {}).slice(0, 40),
+    rows_with_phones: parsedAll.filter((c) => c.phones.length).length,
+    rows_with_emails: parsedAll.filter((c) => c.emails.length).length,
+    rows_with_names: parsedAll.filter((c) => c.names.length).length,
+    rows_with_ref: parsedAll.filter((c) => c.ref).length,
+  };
 
   for (const raw of resultRows) {
     const c = contactsFromRow(raw);
@@ -233,7 +242,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
     status: 'done',
     lockKey: `skiptrace:${submit_job_id}`,
     result: {
-      queue_id, rows_returned: resultRows.length, matched, unmatched, deceased_skipped: deceased,
+      queue_id, rows_returned: resultRows.length, matched, unmatched, deceased_skipped: deceased, shape,
       emails: emails.length, entity_members: members.length, phones: phones.length,
       dnc_queue_id: dncQueueId,
       // Phones wait here until the DNC scrub comes back (skiptrace.dnc saves them).
