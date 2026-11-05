@@ -214,6 +214,13 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
     rows_with_emails: parsedAll.filter((c) => c.emails.length).length,
     rows_with_names: parsedAll.filter((c) => c.names.length).length,
     rows_with_ref: parsedAll.filter((c) => c.ref).length,
+    // Mock data is fake, so in test mode show addresses side by side to check matching.
+    ...(isTestMode(config)
+      ? {
+          sample_returned: parsedAll.slice(0, 3).map((c) => `${c.address} | ${c.city}`),
+          sample_sent: listRows.slice(0, 3).map((r) => `${r.property_address} | ${r.property_city}`),
+        }
+      : {}),
   };
 
   for (const raw of resultRows) {
