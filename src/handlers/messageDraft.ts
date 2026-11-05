@@ -98,7 +98,7 @@ Rules:
 - Never mention or hint at why we're writing to them: no taxes, debt, liens, probate, death, divorce, age,
   vacancy, repairs, code violations, tenants or any other personal or financial situation. Never say how
   we found them or that they are on a list.
-- Plain words, no hype, no exclamation marks, no emojis.
+- Plain words, no hype, no exclamation marks, no emojis. Plain text only, no markdown.
 - Sign off with the sender_name from the JSON.
 - Do not add an unsubscribe line or legal footer; the system adds those.
 ${channel === 'email' ? '- Under 120 words.' : '- Under 300 characters.'}

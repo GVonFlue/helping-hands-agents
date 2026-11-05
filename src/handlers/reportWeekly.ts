@@ -61,6 +61,7 @@ export const reportWeekly: Handler = async ({ db, job, llm, config, spend }) => 
 const SYSTEM = `You write the weekly report for a Wichita cash home buyer's CRM. The owner reads it on his phone.
 Use ONLY the numbers in the JSON you are given. Never invent, estimate or round a number into a new one.
 Plain words, short sentences, no hype, no exclamation marks. Under 250 words.
+Plain text only: the CRM shows it as-is, so no markdown (no **, #, or tables). Use a line break between sections and "- " for bullets.
 Structure, in this order, each a short section with a one-line heading:
 1. This week: new people, replies, texts and emails out, deals won.
 2. Mail: for each recent mailing give response rate, cost per closed deal and return, exactly as given (say "none yet" for nulls).
