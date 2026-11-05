@@ -25,6 +25,37 @@ test('plan.facebook never queues the same owner twice', async () => {
   assert.equal(job.result.queued, 0);
 });
 
+test('plan.facebook skips lists that are still processing (or failed), and picks them up once done', async () => {
+  const biz = await HH();
+  const imp = '10000000-0000-0000-0000-0000000000f9';
+  await admin.query(
+    `insert into public.list_imports (id, business_id, file_name, vendor, status, row_count)
+     values ($1, $2, 'half-done.csv', 'vendor', 'processing', 1)`,
+    [imp, biz],
+  );
+  await admin.query(
+    `insert into public.list_rows (import_id, business_id, row_num, owner_name, mailing_address, mailing_city, mailing_state,
+       mailing_zip, property_address, property_city, property_state, property_zip, owner_key, property_key, bucket, raw)
+     values ($1, $2, 1, 'PAULA NEWBERRY', '3 Ash St', 'WICHITA', 'KS', '67202', '90 Ash St', 'WICHITA', 'KS', '67202',
+             'k-newberry', 'p-ash', 'individual_investor', '{"TOTAL":"99"}')`,
+    [imp, biz],
+  );
+  try {
+    for (const status of ['processing', 'failed']) {
+      await admin.query(`update public.list_imports set status = $2 where id = $1`, [imp, status]);
+      const fb = await run({ search: fakeSearch(() => []) }, { type: 'plan.facebook', agent: 'manager', input: { limit: 10 } });
+      assert.equal(fb.result.queued, 0, `facebook ignores a ${status} list`);
+    }
+    await admin.query(`update public.list_imports set status = 'done' where id = $1`, [imp]);
+    const fb = await run({ search: fakeSearch(() => []) }, { type: 'plan.facebook', agent: 'manager', input: { limit: 10 } });
+    assert.equal(fb.result.queued, 1, 'picked up once the list is done');
+  } finally {
+    await admin.query(`delete from public.agent_jobs where business_id = $1 and (idempotency_key like '%k-newberry%'
+                         or input::text like '%' || coalesce((select id::text from public.list_rows where owner_key = 'k-newberry'), 'none') || '%')`, [biz]);
+    await admin.query(`delete from public.list_imports where id = $1`, [imp]);
+  }
+});
+
 test('plan.facebook does nothing without a search provider', async () => {
   const job = await run({ search: null }, { type: 'plan.facebook', agent: 'manager', input: { limit: 10 } });
   assert.match(job.result.skipped, /no search provider/);

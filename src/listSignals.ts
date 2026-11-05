@@ -27,3 +27,9 @@ export function isProbate(raw: Record<string, unknown> | null | undefined): bool
   const pid = String(raw['PROBATE ADDRESS ID'] ?? '').trim();
   return pid !== '' || /probate/i.test(String(raw['MOTIVATIONS'] ?? ''));
 }
+
+// Only rows from lists that finished processing. A list that's mid-processing
+// (the CRM now runs it in steps) may not have ranks or keys yet, and a failed
+// or stuck list can be discarded in the CRM, so planners never pick from those.
+export const LIST_DONE_SQL = (r: string) =>
+  `exists (select 1 from public.list_imports li where li.id = ${r}.import_id and li.status = 'done')`;

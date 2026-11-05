@@ -124,7 +124,17 @@ test('owners Francis asked about go out even with a daily limit of 0', async () 
 
 test('plan.skiptrace: normal trace for people, advanced for companies and probate; nothing spent yet', async () => {
   const biz = await HH();
+  // A list the CRM is still processing must not be traced (ranks and keys may not be set yet).
+  const halfDone = '10000000-0000-0000-0000-0000000000f8';
+  await admin.query(`insert into public.list_imports (id, business_id, file_name, vendor, status, row_count)
+                     values ($1, $2, 'half-done.csv', 'vendor', 'processing', 1)`, [halfDone, biz]);
+  const pending = (await admin.query(
+    `insert into public.list_rows (import_id, business_id, row_num, owner_name, mailing_address, mailing_city, mailing_state,
+       mailing_zip, property_address, property_city, property_state, property_zip, vendor_rank, owner_key, property_key, bucket)
+     values ($1, $2, 1, 'PAULA NEWBERRY', '3 Ash St', 'WICHITA', 'KS', '67202', '90 Ash St', 'WICHITA', 'KS', '67202',
+             3000, 'k-newberry', 'p-ash', 'individual_investor') returning id`, [halfDone, biz])).rows[0].id;
   const plan = await run({ tracerfy: tf }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 50 } });
+  await admin.query(`delete from public.list_imports where id = $1`, [halfDone]);
   assert.equal(plan.status, 'done', plan.error);
   assert.equal(plan.result.batches_queued, 2);
   assert.equal(tf.submissions.length, 0, 'planning spends nothing');
@@ -135,6 +145,7 @@ test('plan.skiptrace: normal trace for people, advanced for companies and probat
   assert.ok(normal.includes(ROW.stoltenberg) && normal.includes(ROW.smith) && normal.includes(ROW.zimm));
   assert.equal(normal.filter((id: string) => id === '20000000-0000-0000-0000-000000000002').length, 0, "Stoltenberg's second property: same owner, traced once");
   assert.deepEqual(new Set(advanced), new Set([ROW.acme, ROW.elder]), 'company + probate get the address-only trace');
+  assert.ok(![...normal, ...advanced].includes(pending), 'rows from an unfinished list are never traced');
 });
 
 test('submit: checks the budget, sends one batch, holds its max cost, queues collect', async () => {

@@ -4,8 +4,8 @@
 
 | # | Request | Status |
 | --- | --- | --- |
-| 0 | List import mis-reads the vendor's RANK score | **Open.** September list imported Nov 4 with the workaround (sorted by TOTAL, rank = Not in file, score = TOTAL, properties = OWNER TOTAL PROPERTIES); the code fix is still needed for future uploads. See below. |
-| 7 | **New: `process_import` times out from the browser on a full list** | **Open.** See below. |
+| 0 | List import mis-reads the vendor's RANK score | **Done Nov 5** (CRM 007f891, migration 16): decimal columns are scores; rank 1 = highest score. September list was already correct via the workaround. |
+| 7 | `process_import` times out from the browser on a full list | **Done Nov 5** (migrations 15 and 16): `process_import_step` in 5,000-row slices, `fail_import`, Retry, Discard. 30,000 rows in 17s. Worker now only plans from lists with status `done`. |
 | 1 | Duplicate guards | Done. Worker treats SQLSTATE 23505 as "already done". |
 | 2 | ProyTech's own spend | Done. Worker writes `house_cost_cents`; `result.spend` keeps the AI/search split. |
 | 3 | Texting rule | Done as `can_text()`. Worker calls it before any SMS draft and when planning drafts. |

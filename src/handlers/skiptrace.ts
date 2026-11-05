@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Db, Tx } from '../db.ts';
-import { DOORS_SQL, PROBATE_SQL } from '../listSignals.ts';
+import { DOORS_SQL, LIST_DONE_SQL, PROBATE_SQL } from '../listSignals.ts';
 import { firstNameFromRaw, parseOwnerName, titleCase } from '../names.ts';
 import { clientBudgetLeft } from '../spend.ts';
 import { addressKey, contactsFromRow, type TraceRecord, type TraceType } from '../tracerfy.ts';
@@ -79,6 +79,7 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
                         and el.input ->> 'entity_id' = r.entity_id::text))) as asked
          from public.list_rows r
         where r.business_id = $1 and r.owner_key is not null and r.property_address is not null
+          and ${LIST_DONE_SQL('r')}
           and not ${TRACED_SQL('r')}
         order by r.owner_key, r.vendor_rank nulls last
      )

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DOORS_SQL, PRIORITY_SQL, PROBATE_SQL } from '../listSignals.ts';
+import { DOORS_SQL, LIST_DONE_SQL, PRIORITY_SQL, PROBATE_SQL } from '../listSignals.ts';
 import type { Handler } from '../types.ts';
 
 // plan.facebook (Manager, daily): queue the next owners to search, one job per
@@ -25,6 +25,7 @@ export const planFacebook: Handler = async ({ db, job, config, search }) => {
               bool_or(p.facebook_url is not null) as has_fb
          from public.list_rows r left join public.people p on p.id = r.person_id
         where r.business_id = $1 and r.owner_key is not null and r.owner_name is not null
+          and ${LIST_DONE_SQL('r')}
         group by r.owner_key
      ),
      todo as (
@@ -40,7 +41,7 @@ export const planFacebook: Handler = async ({ db, job, config, search }) => {
      )
      select t.owner_key, t.mailed, t.doors,
             (select r.id from public.list_rows r
-              where r.business_id = $1 and r.owner_key = t.owner_key
+              where r.business_id = $1 and r.owner_key = t.owner_key and ${LIST_DONE_SQL('r')}
               order by ${PRIORITY_SQL('r')} desc nulls last, r.vendor_rank nulls last, r.id limit 1) as list_row_id
        from todo t
       order by t.mailed, (t.doors >= 2) desc, t.priority desc nulls last, t.best_rank nulls last`,
