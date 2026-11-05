@@ -43,7 +43,7 @@ test('strong match: one pending finding linked to the list row, with confidence 
   assert.equal(f[0].job_id, job.id);
   assert.equal(job.cost_cents, 0, "search is ProyTech's cost, not Francis's lookup budget");
   assert.equal(job.result.spend.searches, 1);
-  assert.equal(job.result.spend.search_cents, 0.5);
+  assert.equal(job.result.spend.search_cents, 0.1);
 });
 
 test('running it again, or for the same owner on another row, finds nothing new and searches nothing', async () => {
