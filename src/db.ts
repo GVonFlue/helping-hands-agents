@@ -22,12 +22,18 @@ export function createPool(url: string, password?: string): Db {
   // A ?sslmode=require copied from Supabase would override `ssl` and turn on
   // strict certificate checks pg can't satisfy without the CA; drop it.
   const cleaned = url.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
+  const common = { max: 5, ssl, application_name: 'helping-hands-agents' };
+  if (!password) return new pg.Pool({ connectionString: cleaned, ...common });
+  // Separate password: pg lets connectionString override `password`, so split
+  // the URL into parts ourselves and pass the raw password untouched.
+  const u = new URL(cleaned);
   return new pg.Pool({
-    connectionString: cleaned,
-    ...(password ? { password } : {}),
-    max: 5,
-    ssl,
-    application_name: 'helping-hands-agents',
+    host: u.hostname,
+    port: u.port ? Number(u.port) : 5432,
+    user: decodeURIComponent(u.username),
+    database: decodeURIComponent(u.pathname.replace(/^\//, '')) || 'postgres',
+    password,
+    ...common,
   });
 }
 
