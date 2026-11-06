@@ -69,23 +69,25 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
               r.id, r.owner_key, r.bucket, r.vendor_rank, r.owner_name, r.raw,
               ${PROBATE_SQL('r')} as probate,
               ${DOORS_SQL('r')} as doors,
-              (exists (select 1 from public.agent_jobs pl
-                        where pl.business_id = r.business_id and pl.job_type = 'person.lookup' and pl.status = 'done'
-                          and pl.input ->> 'list_row_id' = r.id::text)
-               or (r.entity_id is not null and exists (
+              exists (select 1 from public.agent_jobs pl
+                       where pl.business_id = r.business_id and pl.job_type = 'person.lookup' and pl.status = 'done'
+                         and pl.input ->> 'list_row_id' = r.id::text) as asked_person,
+              (r.entity_id is not null and exists (
                      select 1 from public.agent_jobs el
                       where el.business_id = r.business_id and el.job_type = 'entity.lookup' and el.status = 'done'
                         and (el.result ->> 'queued_for_next_batch')::boolean
-                        and el.input ->> 'entity_id' = r.entity_id::text))) as asked
+                        and el.input ->> 'entity_id' = r.entity_id::text)) as asked_entity
          from public.list_rows r
         where r.business_id = $1 and r.owner_key is not null and r.property_address is not null
           and ${LIST_DONE_SQL('r')}
           and not ${TRACED_SQL('r')}
         order by r.owner_key, r.vendor_rank nulls last
      )
-     select * from owners o
-      where o.asked or not (o.bucket = 'entity' and o.doors >= $5)
-      order by o.asked desc,
+     select o.*, (o.asked_person or o.asked_entity) as asked from owners o
+      -- Big companies (20+ doors) are skipped unless that one owner was asked
+      -- about; the list-wide LLC button doesn't override it.
+      where o.asked_person or not (o.bucket = 'entity' and o.doors >= $5)
+      order by (o.asked_person or o.asked_entity) desc,
                case when o.vendor_rank between $3 and $4 then 0 when o.vendor_rank < $3 then 1 else 2 end,
                (o.doors >= 2) desc, o.vendor_rank nulls last
       limit $2`,
@@ -384,11 +386,15 @@ export async function entityViaSkiptrace(ctx: Ctx, entityId: string): Promise<im
     return { status: 'blocked', error: "LLC lookups use paid skip trace: Francis's Scrub budget for this month is $0 or used up. Set it in Settings.", result: { budget_left_cents: left } };
   }
   const { rows } = await db.query(
-    `select count(*)::int as n, count(*) filter (where not ${TRACED_SQL('r')})::int as todo
+    `select count(*)::int as n, count(*) filter (where not ${TRACED_SQL('r')})::int as todo,
+            greatest(count(distinct r.property_key), coalesce(max(${DOORS_SQL('r')}), 0))::int as doors
        from public.list_rows r where r.business_id = $1 and r.entity_id = $2 and r.property_address is not null`,
     [job.business_id, entityId],
   );
   if (!rows[0].n) return { status: 'done', result: { skipped: 'no list rows for this LLC' } };
+  if (rows[0].doors >= config.skipBigCompanyDoors) {
+    return { status: 'done', result: { skipped: `big company (${rows[0].doors} properties): not traced`, doors: rows[0].doors } };
+  }
   if (!rows[0].todo) return { status: 'done', result: { skipped: 'LLC already looked up' } };
   return { status: 'done', result: { queued_for_next_batch: true, via: 'skip trace (advanced)', rows: rows[0].todo }, write: (tx) => queueAskedBatch(tx, job.business_id) };
 }

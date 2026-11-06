@@ -110,6 +110,29 @@ test('"Find the people behind an LLC" goes through skip trace (SOS is behind a C
   assert.equal(p.later, true, 'runs after the slot ends');
 });
 
+test('the LLC button skips big companies (20+ properties): no batch, nothing spent', async () => {
+  const biz = await HH();
+  const ent = '40000000-0000-0000-0000-0000000000b1';
+  await admin.query(`insert into public.entities (id, name, normalized_name) values ($1, 'Big Rentals LLC', 'big rentals')`, [ent]);
+  await admin.query(
+    `insert into public.list_rows (import_id, business_id, row_num, owner_name, mailing_address, mailing_city, mailing_state, mailing_zip,
+       property_address, property_city, property_state, property_zip, vendor_rank, owner_key, property_key, bucket, entity_id, raw)
+     values ('10000000-0000-0000-0000-000000000001', $1, 99, 'BIG RENTALS LLC', 'PO Box 9', 'DALLAS', 'TX', '75201',
+             '5 Oak Ct', 'WICHITA', 'KS', '67202', 2600, 'k-big', 'p-oakct', 'entity', $2, '{"OWNER TOTAL PROPERTIES":"45"}')`,
+    [biz, ent],
+  );
+  try {
+    const job = await run({ tracerfy: tf }, { type: 'entity.lookup', agent: 'scrub', input: { entity_id: ent } });
+    assert.equal(job.status, 'done', job.error);
+    assert.match(job.result.skipped, /big company \(45 properties\)/);
+    assert.equal(job.result.queued_for_next_batch, undefined);
+  } finally {
+    await admin.query(`delete from public.agent_jobs where input ->> 'entity_id' = $1`, [ent]);
+    await admin.query(`delete from public.list_rows where owner_key = 'k-big'`);
+    await admin.query(`delete from public.entities where id = $1`, [ent]);
+  }
+});
+
 test('owners Francis asked about go out even with a daily limit of 0', async () => {
   const biz = await HH();
   const plan = await run({ tracerfy: tf }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 0 } });
