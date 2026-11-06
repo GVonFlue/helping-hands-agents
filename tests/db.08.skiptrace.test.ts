@@ -104,8 +104,8 @@ test('"Find the people behind an LLC" goes through skip trace (SOS is behind a C
   assert.equal(job.status, 'done', job.error);
   assert.equal(job.result.queued_for_next_batch, true);
   assert.equal(job.result.rows, 1);
-  // (the Find info test above already made this quarter-hour's planner; the harness cancels leftovers between tests)
-  const p = (await admin.query(`select input, run_after > now() + interval '14 minutes' as later from public.agent_jobs where job_type = 'plan.skiptrace' and idempotency_key like 'plan.skiptrace:asked:%' order by created_at desc limit 1`)).rows[0];
+  // (the Find info test above already made this 5-minute slot's planner; the harness cancels leftovers between tests)
+  const p = (await admin.query(`select input, run_after > now() + interval '4 minutes' as later from public.agent_jobs where job_type = 'plan.skiptrace' and idempotency_key like 'plan.skiptrace:asked:%' order by created_at desc limit 1`)).rows[0];
   assert.deepEqual(p.input, { limit: 0 });
   assert.equal(p.later, true, 'runs after the slot ends');
 });

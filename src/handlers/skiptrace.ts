@@ -413,16 +413,16 @@ export async function entityViaSkiptrace(ctx: Ctx, entityId: string): Promise<im
 }
 
 async function queueAskedBatch(tx: Tx, businessId: string): Promise<void> {
-  // One planner per quarter hour, however many owners were clicked; it runs
-  // after the clicks have been processed. limit 0 = only owners someone asked about.
-  // Runs 15 minutes after its slot ends, so every click in the slot is processed first.
-  const slotStart = Math.floor(Date.now() / 900_000) * 900_000;
+  // One planner per 5-minute slot, however many owners were clicked; limit 0 = only
+  // owners someone asked about. It runs 5 minutes after its slot ends, so every click
+  // in the slot has been processed first: a click goes out within about 5-10 minutes.
+  const slotStart = Math.floor(Date.now() / 300_000) * 300_000;
   const slot = new Date(slotStart).toISOString().slice(0, 16);
   await tx.query(
     `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
      values ($1, 'manager', 'plan.skiptrace', '{"limit": 0}'::jsonb, $2, 'queued', to_timestamp($3::double precision / 1000))
      on conflict (idempotency_key) do nothing`,
-    [businessId, `plan.skiptrace:asked:${businessId}:${slot}`, slotStart + 1_800_000],
+    [businessId, `plan.skiptrace:asked:${businessId}:${slot}`, slotStart + 600_000],
   );
 }
 
