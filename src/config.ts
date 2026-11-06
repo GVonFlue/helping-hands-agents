@@ -51,7 +51,7 @@ export function loadConfig() {
     skiptraceDailyLimit: num('SKIPTRACE_DAILY_LIMIT', 20),
     // Owners from CRM button clicks (list-wide LLC / paid lookup buttons) sent per day, so one click
     // can't spend the month's budget at once. The rest go out on the following days.
-    skiptraceAskedDailyLimit: num('SKIPTRACE_ASKED_DAILY_LIMIT', 50),
+    skiptraceAskedDailyLimit: num('SKIPTRACE_ASKED_DAILY_LIMIT', 10),
     skiptraceDnc: (process.env.SKIPTRACE_DNC ?? 'true') !== 'false',
     // Rank band Francis wants done first (just past his mail cutoff).
     skiptraceFirstBand: (process.env.SKIPTRACE_FIRST_BAND || '2501-10000').split('-').map(Number) as [number, number],
