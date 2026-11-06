@@ -92,15 +92,23 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
           and not ${TRACED_SQL('r')}
         order by r.owner_key, r.vendor_rank nulls last
      )
-     select o.*, (o.asked_person or o.asked_entity) as asked from owners o
-      -- Big companies (20+ doors) are skipped unless that one owner was asked
-      -- about; the list-wide LLC button doesn't override it.
-      where o.asked_person or not (o.bucket = 'entity' and o.doors >= $5)
-      order by (o.asked_person or o.asked_entity) desc,
-               case when o.vendor_rank between $3 and $4 then 0 when o.vendor_rank < $3 then 1 else 2 end,
-               (o.doors >= 2) desc, o.vendor_rank nulls last
-      limit $2`,
-    [job.business_id, askedLimit + autoLimit, bandLo, bandHi, config.skipBigCompanyDoors],
+     , picked as (
+       select o.*, (o.asked_person or o.asked_entity) as asked,
+              -- Clicked and automatic owners are ranked separately, so a backlog of
+              -- clicks never crowds out the daily automatic picks.
+              row_number() over (
+                partition by (o.asked_person or o.asked_entity)
+                order by case when o.vendor_rank between $3 and $4 then 0 when o.vendor_rank < $3 then 1 else 2 end,
+                         (o.doors >= 2) desc, o.vendor_rank nulls last, o.owner_key) as rn
+         from owners o
+        -- Big companies (20+ doors) are skipped unless that one owner was asked
+        -- about; the list-wide LLC button doesn't override it.
+        where o.asked_person or not (o.bucket = 'entity' and o.doors >= $5)
+     )
+     select * from picked
+      where (asked and rn <= $2) or (not asked and rn <= $6)
+      order by asked desc, rn`,
+    [job.business_id, askedLimit, bandLo, bandHi, config.skipBigCompanyDoors, autoLimit],
   );
   const askedRows = candidates.filter((r) => r.asked).slice(0, askedLimit);
   const autoRows = candidates.filter((r) => !r.asked).slice(0, Math.max(0, Math.min(autoLimit, affordable - askedRows.length)));

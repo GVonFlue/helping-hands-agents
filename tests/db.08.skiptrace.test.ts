@@ -155,6 +155,11 @@ test('clicked owners are capped per day, so one click cannot spend the month', a
   assert.equal(one.result.asked, 1);
   assert.equal(one.result.asked_left_today, 0);
   await admin.query(`update public.agent_jobs set status = 'cancelled' where business_id = $1 and job_type = 'skiptrace.submit' and status = 'queued'`, [biz]);
+  // A backlog of clicked owners (2 waiting, 1 allowed) must not crowd out the automatic picks.
+  const mixed = await run({ tracerfy: tf, config: config({ skiptraceAskedDailyLimit: 4 }) }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 1 } });
+  assert.equal(mixed.result.asked, 1);
+  assert.equal(mixed.result.normal + mixed.result.advanced, 2, 'one clicked owner plus one automatic pick');
+  await admin.query(`update public.agent_jobs set status = 'cancelled' where business_id = $1 and job_type = 'skiptrace.submit' and status = 'queued'`, [biz]);
 });
 
 test('plan.skiptrace: normal trace for people, advanced for companies and probate; nothing spent yet', async () => {
