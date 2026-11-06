@@ -49,6 +49,9 @@ export function loadConfig() {
     tracerfyApiKey: process.env.TRACERFY_API_KEY || '',
     tracerfyBase: process.env.TRACERFY_BASE || 'https://tracerfy.com', // https://mock.tracerfy.com = free test data
     skiptraceDailyLimit: num('SKIPTRACE_DAILY_LIMIT', 20),
+    // Owners from CRM button clicks (list-wide LLC / paid lookup buttons) sent per day, so one click
+    // can't spend the month's budget at once. The rest go out on the following days.
+    skiptraceAskedDailyLimit: num('SKIPTRACE_ASKED_DAILY_LIMIT', 50),
     skiptraceDnc: (process.env.SKIPTRACE_DNC ?? 'true') !== 'false',
     // Rank band Francis wants done first (just past his mail cutoff).
     skiptraceFirstBand: (process.env.SKIPTRACE_FIRST_BAND || '2501-10000').split('-').map(Number) as [number, number],

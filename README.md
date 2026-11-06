@@ -14,7 +14,7 @@ The background worker for the Baalmann Business Suite (client: Francis, Helping 
 | `person.facebook` | scrub | Built, off | Logged-out web search for a public profile link; writes at most one pending finding. Off until a search provider is signed off. |
 | `plan.facebook` | manager | Built, off | Daily: queues the next owners to search (unmailed + 2+ doors first, then rank, mailed owners last), each owner once. |
 | `entity.lookup` | scrub | Blocked | Kansas SOS search is behind a CAPTCHA (AWS WAF "Human Verification"). Jobs park as `blocked` with the reason; the 90-day cache and writer are built and tested for when a source is chosen. |
-| `plan.skiptrace` | manager | Built | Daily from 9am: next batch of owners (ranks 2,501–10,000 first, then the top 2,500; owners Francis clicked "Find info" on go first). Normal trace for people, advanced (address only) for companies, trusts and probate. Skips companies with 20+ doors. Never traces an owner twice. |
+| `plan.skiptrace` | manager | Built | Daily from 9am: next batch of owners (ranks 2,501–10,000 first, then the top 2,500; owners from CRM button clicks go first, at most 50 a day so one click can't spend the month). Normal trace for people, advanced (address only) for companies, trusts and probate. Skips companies with 20+ doors. Never traces an owner twice. |
 | `skiptrace.submit` / `.collect` / `.dnc` | scrub | Built | Tracerfy batch: submit (budget check, cost held at max), collect (emails + LLC members saved, real cost recorded), DNC scrub (phones saved with `do_not_call` from the scrub; anything not scrubbed is treated as Do Not Call). |
 | `person.lookup` | scrub | Built | The CRM's "Find info" button: puts that owner at the front of the next batch. Blocked while Francis's cap is $0. |
 

@@ -145,6 +145,18 @@ test('owners Francis asked about go out even with a daily limit of 0', async () 
   await admin.query(`update public.agent_jobs set status = 'cancelled' where job_type = 'skiptrace.submit' and status = 'queued'`);
 });
 
+test('clicked owners are capped per day, so one click cannot spend the month', async () => {
+  const biz = await HH();
+  // The test above already sent 2 clicked owners today.
+  const capped = await run({ tracerfy: tf, config: config({ skiptraceAskedDailyLimit: 2 }) }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 0 } });
+  assert.equal(capped.status, 'done', capped.error);
+  assert.equal(capped.result.asked, 0, 'daily cap reached: the rest wait for tomorrow');
+  const one = await run({ tracerfy: tf, config: config({ skiptraceAskedDailyLimit: 3 }) }, { type: 'plan.skiptrace', agent: 'manager', input: { limit: 0 } });
+  assert.equal(one.result.asked, 1);
+  assert.equal(one.result.asked_left_today, 0);
+  await admin.query(`update public.agent_jobs set status = 'cancelled' where business_id = $1 and job_type = 'skiptrace.submit' and status = 'queued'`, [biz]);
+});
+
 test('plan.skiptrace: normal trace for people, advanced for companies and probate; nothing spent yet', async () => {
   const biz = await HH();
   // A list the CRM is still processing must not be traced (ranks and keys may not be set yet).

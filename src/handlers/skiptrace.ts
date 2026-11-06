@@ -54,10 +54,19 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
   const left = await budgetLeft(db, { config, businessId: job.business_id });
   const perRow = estimateCents('advanced', 1, config.skiptraceDnc); // worst case per owner
   const affordable = Math.floor(left / perRow);
-  // Owners Francis asked about (CRM buttons) go regardless of the daily limit,
-  // as many as the budget covers. The daily limit only caps the automatic picks.
+  // Owners Francis asked about (CRM buttons) go first, up to SKIPTRACE_ASKED_DAILY_LIMIT a day
+  // and the budget; the rest wait for the next day. The daily limit caps the automatic picks.
   const autoLimit = Math.max(0, Number((job.input as { limit?: number }).limit ?? config.skiptraceDailyLimit));
-  const askedLimit = Math.min(affordable, 500);
+  // Clicked owners are capped per day (Central time) so one click can't spend the month's budget.
+  const { rows: today } = await db.query(
+    `select coalesce(sum((result ->> 'asked')::int), 0)::int as n from public.agent_jobs
+      where business_id = $1 and job_type = 'plan.skiptrace' and status = 'done' and id <> $2
+        and coalesce(result ->> 'budget_left_cents', '') <> 'test mode'
+        and finished_at >= (date_trunc('day', now() at time zone 'America/Chicago') at time zone 'America/Chicago')`,
+    [job.business_id, job.id],
+  );
+  const askedLeftToday = Math.max(0, config.skiptraceAskedDailyLimit - (today[0]?.n ?? 0));
+  const askedLimit = Math.min(affordable, askedLeftToday, 500);
   if (affordable <= 0) {
     return { status: 'done', result: { skipped: "Francis's Scrub budget is $0 or used up", budget_left_cents: left } };
   }
@@ -107,7 +116,11 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
   const day = new Date().toISOString().slice(0, 10);
   return {
     status: 'done',
-    result: { normal: normal.length, advanced: advanced.length, asked: askedRows.length, budget_left_cents: isTestMode(config) ? 'test mode' : left },
+    result: {
+      normal: normal.length, advanced: advanced.length, asked: askedRows.length,
+      asked_left_today: askedLeftToday - askedRows.length,
+      budget_left_cents: isTestMode(config) ? 'test mode' : left,
+    },
     write: async (tx) => {
       let queued = 0;
       for (const [type, ids] of [['normal', normal], ['advanced', advanced]] as const) {
