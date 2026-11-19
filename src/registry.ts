@@ -1,3 +1,4 @@
+import { customRun } from './handlers/customRun.ts';
 import { makeEntityLookup } from './handlers/entityLookup.ts';
 import { messageDraft } from './handlers/messageDraft.ts';
 import { personFacebook } from './handlers/personFacebook.ts';
@@ -21,4 +22,5 @@ export const handlers: Record<string, Handler> = {
   'plan.facebook': planFacebook,
   'plan.drafts': planDrafts,
   'plan.skiptrace': planSkiptrace,
+  'run.custom': customRun, // CRM Control page: Francis picks what runs now
 };

@@ -25,12 +25,12 @@ import { UUID_RE, type Ctx, type Handler } from '../types.ts';
 
 const CENTS_PER_CREDIT = 2;
 const CREDITS: Record<TraceType, number> = { normal: 1, advanced: 2 };
-const DNC_CREDITS_PER_OWNER_ESTIMATE = 3; // up to ~3 phones each
+const DNC_CREDITS_PER_OWNER_ESTIMATE = 5; // live batches average ~4 phones per owner; hold for 5
 
 // Tracerfy's mock server (fake data, no charges): skip the budget gate and record $0.
 // Against the real server the gate always applies.
 export const isTestMode = (config: Ctx['config']) => /(^|\/\/)mock\./.test(config.tracerfyBase);
-const budgetLeft = async (db: Db, ctx: { config: Ctx['config']; businessId: string }) =>
+export const budgetLeft = async (db: Db, ctx: { config: Ctx['config']; businessId: string }) =>
   isTestMode(ctx.config) ? Number.MAX_SAFE_INTEGER : clientBudgetLeft(db, ctx.businessId, 'scrub');
 
 export function estimateCents(type: TraceType, rows: number, dnc: boolean): number {
@@ -39,7 +39,7 @@ export function estimateCents(type: TraceType, rows: number, dnc: boolean): numb
 
 // Owners already sent to Tracerfy (any row with the same owner_key), so a
 // repeat owner on next month's list is never paid for twice.
-const TRACED_SQL = (r: string) => `exists (
+export const TRACED_SQL = (r: string) => `exists (
   select 1 from public.agent_jobs j, public.list_rows r2
    where j.business_id = ${r}.business_id and j.job_type = 'skiptrace.submit'
      and j.status in ('queued', 'running', 'done')
