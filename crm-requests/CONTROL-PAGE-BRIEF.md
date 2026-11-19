@@ -134,11 +134,22 @@ For each `run.custom` job from the last 7 days, newest first, show one row. Poll
 - If the run was trimmed: "N owners were over your budget and didn't run" (`result.contact.over_budget`).
 - If the `run.custom` job failed, show its `error` text. It's written in plain words.
 
-### 2e. Your agents
+### 2e. Your Tracerfy account
+
+A card titled **Your Tracerfy account**, below the lookup builder (mockup: Main and Phone artboards):
+
+- Text: "Where phone and email lookups are paid for. Add credit, check your balance or get receipts there." Under it, smaller: "Keep at least your monthly budget on it, or lookups stop early."
+- A big **Open Tracerfy** button, opening the account link in a new tab (`target="_blank" rel="noopener noreferrer"`).
+- The same link, labeled **Open Tracerfy account**, under the budget tile in 2b, and on the red "out of credit" banner's button in 2a.
+- Store the link per business, editable in Settings → Agents by admins. Default it to `https://tracerfy.com`. Don't hardcode it in the component.
+- **Never store or ask for his Tracerfy password in the CRM.** The link just opens Tracerfy, and he signs in there.
+- Tracerfy has no published way to read the balance, so don't show a balance number. The out-of-credit banner (2a) covers the "it ran out" case.
+
+### 2f. Your agents
 
 One row each for Manager, Scrub and Contact: a one-sentence description and a big On/Off switch bound to `agent_settings.enabled`. Admin role only. Reuse what Settings → Agents does, with the same descriptions as the mockup. Keep the Settings tab too.
 
-### 2f. Today
+### 2g. Today
 
 Plain-language lines from the last 24 hours of `agent_jobs`, newest first. Each gets a Done, Stopped or Running pill. Examples:
 
@@ -177,6 +188,7 @@ Test in `test_rls.sql` that calling `promote_enrichment` for two findings of the
 - [ ] A viewer-role login can see the page but can't start a lookup, change the budget or flip agents. The buttons are hidden and the database refuses.
 - [ ] Usable at 390px wide, with no sideways scrolling.
 - [ ] `npm run build`, `npm run test:db` and `npm run test:api` pass.
+- [ ] **Open Tracerfy** (card, budget tile and red banner) opens the business's stored link in a new tab. An admin can change the link in Settings → Agents; a viewer can't.
 - [ ] A **Practice run** creates a `run.custom` job with `"practice": true`, shows the Practice badge and the "would have found" line, and leaves the budget and the review list unchanged.
 - [ ] Reply to Logan with the migration name and a short screen recording of a Top 100 **practice** run.
 
