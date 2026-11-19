@@ -68,8 +68,8 @@ language sql stable security invoker set search_path = public as $$
       'already_looked_up', (select count(*) from picked where is_traced),
       'skipped_big_companies', (select count(*) from picked where not is_traced and owner_type = 'company' and doors >= p_big_doors),
       -- what the worker holds (the most it can cost) and what live batches have averaged
-      'max_cents', (select coalesce(sum(case when owner_type = 'person' then 12 else 14 end), 0) from todo),
-      'typical_cents', (select coalesce(sum(case when owner_type = 'person' then 11 else 16 end), 0) from todo)
+      'max_cents', (select coalesce(sum(case when owner_type = 'person' then 14 else 16 end), 0) from todo),
+      'typical_cents', (select coalesce(sum(case when owner_type = 'person' then 11 else 15 end), 0) from todo)
     ),
     'facebook', jsonb_build_object(
       'to_search', (select count(*) from picked where owner_type = 'person' and not fb_done),

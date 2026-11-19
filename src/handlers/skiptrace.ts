@@ -25,7 +25,7 @@ import { UUID_RE, type Ctx, type Handler } from '../types.ts';
 
 const CENTS_PER_CREDIT = 2;
 const CREDITS: Record<TraceType, number> = { normal: 1, advanced: 2 };
-const DNC_CREDITS_PER_OWNER_ESTIMATE = 5; // live batches average ~4 phones per owner; hold for 5
+const DNC_CREDITS_PER_OWNER_ESTIMATE = 6; // live: ~4 phones per person, ~6 per company or estate; hold for 6
 
 // Tracerfy's mock server (fake data, no charges): skip the budget gate and record $0.
 // Against the real server the gate always applies.

@@ -85,7 +85,8 @@ test('custom run: top 1,000, every kind of owner, phones+emails and Facebook', a
   for (const k of ['to_look_up', 'people', 'companies_and_estates', 'already_looked_up', 'skipped_big_companies']) {
     assert.equal(before.contact[k], r.contact[k], `contact.${k}`);
   }
-  assert.equal(before.contact.max_cents, 2 * 12 + 2 * 14);
+  assert.equal(before.contact.max_cents, 2 * 14 + 2 * 16);
+  assert.equal(r.contact.estimated_max_cents, 0, 'test mode records $0');
   for (const k of ['to_search', 'already_searched', 'not_people']) assert.equal(before.facebook[k], r.facebook[k], `facebook.${k}`);
 
   const subs = (await admin.query(
