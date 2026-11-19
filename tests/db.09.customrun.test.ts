@@ -168,6 +168,22 @@ test('custom run: settings that make no sense fail with a plain reason', async (
   assert.equal(backwards.status, 'failed');
 });
 
+test('the CRM On/Off switch: a job for an agent that is turned off waits, using no attempt', async () => {
+  const biz = await HH();
+  await admin.query(`update public.agent_settings set enabled = false where business_id = $1 and agent = 'manager'`, [biz]);
+  try {
+    const job = await run({ tracerfy: tf, search, config: cfg }, {
+      type: 'run.custom', agent: 'manager', input: { ...top1000, owner_types: ['person'], find: ['facebook'] },
+    });
+    assert.equal(job.status, 'queued', 'waits instead of running');
+    assert.equal(job.attempts, 0);
+    assert.match(job.result.waiting, /manager is turned off/);
+    assert.ok(new Date(job.run_after).getTime() > Date.now() + 5 * 60_000, 'checks again in about 10 minutes');
+  } finally {
+    await admin.query(`update public.agent_settings set enabled = true where business_id = $1 and agent = 'manager'`, [biz]);
+  }
+});
+
 test('custom run: clean up test data', async () => {
   await admin.query(`delete from public.agent_jobs where job_type = 'run.custom' or input ? 'run_id'`);
   await admin.query(`delete from public.list_imports where id = $1`, [IMP]);

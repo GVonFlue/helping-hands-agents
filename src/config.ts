@@ -25,6 +25,7 @@ export function loadConfig() {
     pollMs: num('POLL_MS', 15_000),
     idlePollMs: num('IDLE_POLL_MS', 60_000),
     maxAttempts: num('MAX_ATTEMPTS', 3),
+    agentOffRecheckSec: num('AGENT_OFF_RECHECK_SEC', 600),
     staleLockMinutes: num('STALE_LOCK_MINUTES', 30),
 
     // ProyTech's own spend, out of the flat $249 a month. Not Francis's lookup cap.

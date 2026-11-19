@@ -24,7 +24,7 @@ language sql stable security invoker set search_path = public as $$
        and r.vendor_rank between p_rank_from and p_rank_to
      order by r.owner_key, r.vendor_rank
   ),
-  traced as (   -- owners already sent for phones and emails (any list), live batches only
+  traced as (   -- owners already sent for phones and emails (any list); live batches only
     select distinct r2.owner_key
       from agent_jobs j
       cross join lateral jsonb_array_elements_text(coalesce(j.input -> 'list_row_ids', '[]'::jsonb)) x(id)
@@ -32,22 +32,21 @@ language sql stable security invoker set search_path = public as $$
      where j.business_id = p_business and j.job_type = 'skiptrace.submit'
        and j.status in ('queued', 'running', 'done')
        and coalesce((j.result ->> 'test_mode')::boolean, false) = false
-  ),
-  fb as (       -- owners already searched on Facebook
-    select distinct r3.owner_key
-      from agent_jobs j join list_rows r3 on r3.id::text = j.input ->> 'list_row_id'
-     where j.business_id = p_business and j.job_type = 'person.facebook' and j.status in ('queued', 'running', 'done')
-    union
-    select split_part(j.idempotency_key, ':', 3) from agent_jobs j
-     where j.business_id = p_business and j.idempotency_key like 'person.facebook:%'
+       and coalesce((j.input ->> 'practice')::boolean, false) = false
+       and not coalesce(j.result ? 'skipped', false)
+       and r2.owner_key is not null
   ),
   o as (
     select b.*,
            case when b.probate then 'estate' when b.bucket = 'entity' then 'company' else 'person' end as owner_type,
            (b.mail_selected or exists (select 1 from mailing_pieces mp join list_rows r4 on r4.id = mp.list_row_id
                                         where r4.business_id = p_business and r4.owner_key = b.owner_key)) as mailed,
-           b.owner_key in (select owner_key from traced) as is_traced,
-           (b.owner_key in (select owner_key from fb)
+           exists (select 1 from traced t where t.owner_key = b.owner_key) as is_traced,
+           (exists (select 1 from agent_jobs j
+                     where j.business_id = p_business and j.idempotency_key = 'person.facebook:' || p_business || ':' || b.owner_key)
+            or exists (select 1 from agent_jobs j join list_rows r3 on r3.id::text = j.input ->> 'list_row_id'
+                        where j.business_id = p_business and j.job_type = 'person.facebook'
+                          and j.status in ('queued', 'running', 'done') and r3.owner_key = b.owner_key)
             or exists (select 1 from people p where p.id = b.person_id and p.facebook_url is not null)) as fb_done
       from best b
   ),

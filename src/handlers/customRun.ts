@@ -165,7 +165,7 @@ export const customRun: Handler = async ({ db, job, config, tracerfy: liveTracer
           const r = await tx.query(
             `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status)
              values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, $3, 'queued') on conflict (idempotency_key) do nothing`,
-            [job.business_id, JSON.stringify({ trace_type: type, list_row_ids: ids.slice(i, i + BATCH), run_id: job.id, practice: run.practice || undefined }),
+            [job.business_id, JSON.stringify({ trace_type: type, list_row_ids: ids.slice(i, i + BATCH), run_id: job.id, run_max_cents: run.practice ? undefined : run.max_spend_cents, practice: run.practice || undefined }),
              `skiptrace.submit:${job.business_id}:run:${job.id}:${type}:${i / BATCH}`],
           );
           batches += r.rowCount ?? 0;

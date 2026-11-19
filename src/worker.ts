@@ -25,6 +25,16 @@ export async function runJob(deps: Deps, job: Job): Promise<string> {
       await finishJob(db, config.workerId, job.id, { status: 'failed', error: `unknown job type "${job.job_type}"` });
       return 'failed';
     }
+    // The CRM's On/Off switch: a job for an agent that's turned off waits (without
+    // using an attempt) and runs once the agent is turned back on.
+    const off = await db.query(
+      `select 1 from public.agent_settings where business_id = $1 and agent = $2 and enabled = false`,
+      [job.business_id, job.agent],
+    );
+    if (off.rowCount) {
+      await waitJob(db, config.workerId, job.id, config.agentOffRecheckSec, { waiting: `${job.agent} is turned off` });
+      return 'queued';
+    }
     const out = await handler(ctx);
     if (out.status === 'done') {
       const stillOurs = await withTx(db, async (tx) => {

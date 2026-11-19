@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { admin, config, count, HH, run, runExisting } from './helpers.ts';
-import { isTestMode } from '../src/handlers/skiptrace.ts';
+import { isTestMode, TRACED_SQL } from '../src/handlers/skiptrace.ts';
 import type { DncResult, TraceRecord, TraceType, Tracerfy } from '../src/tracerfy.ts';
 
 // A fake Tracerfy that behaves like the docs: batches finish after one poll,
@@ -228,7 +228,9 @@ test('dnc: saves phones with Do Not Call from the scrub and records its cost', a
   const dnc = (await admin.query(`select id from public.agent_jobs where job_type = 'skiptrace.dnc' and status = 'queued'`)).rows[0];
   const job = await runExisting({ tracerfy: tf }, dnc.id);
   assert.equal(job.status, 'done', job.error);
-  assert.equal(job.cost_cents, 3 * 2);
+  assert.equal(job.cost_cents, 0, 'the scrub cost sits on the collect job');
+  const col = (await admin.query(`select cost_cents from public.agent_jobs where id = $1`, [job.input.collect_job_id])).rows[0];
+  assert.equal(col.cost_cents, 3 * 2, 'collect held the scrub estimate the moment it was sent, now the real charge');
   const phones = Object.fromEntries((await admin.query(`select value, do_not_call from public.enrichment_results where kind = 'phone'`)).rows.map((r) => [r.value, r.do_not_call]));
   assert.deepEqual(phones, { '3165550001': false, '3165550002': true, '3165550055': false });
 });
@@ -347,4 +349,59 @@ test('practice run (CRM Control page): live worker, $0 cap, goes to the test ser
   // Pat can still be looked up for real later.
   const again = await run({ tracerfy: practiceServer, config: config() }, { type: 'person.lookup', agent: 'scrub', input: { list_row_id: '20000000-0000-0000-0000-00000000000a' } });
   assert.doesNotMatch(String(again.result?.skipped ?? ''), /already looked up/);
+});
+
+test('safety: no mailing address uses the property address; a Do Not Call check that fails to start keeps the paid batch', async () => {
+  const biz = await HH();
+  await setCap(100_000);
+  await admin.query(`insert into public.list_rows (id, import_id, business_id, row_num, owner_name, property_address, property_city, property_state, property_zip, vendor_rank, owner_key, property_key, bucket, raw)
+                     select '20000000-0000-0000-0000-00000000000b', '10000000-0000-0000-0000-000000000001', $1, 11, 'NORA NOMAIL', '7 Fir St', 'WICHITA', 'KS', '67202', 11, 'k-nora', 'p-fir7', 'owner_occupied', '{"FIRST NAME":"NORA"}'::jsonb`, [biz]);
+  const broken = fakeTracerfy();
+  broken.submitDnc = async () => { throw new Error('Tracerfy: not enough credits on the account. Add credits at tracerfy.com.'); };
+  const live = config({ tracerfyBase: 'https://tracerfy.com' });
+  const sub = await admin.query(`insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key) values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, 'test:nora') returning id`,
+    [biz, JSON.stringify({ trace_type: 'normal', list_row_ids: ['20000000-0000-0000-0000-00000000000b'] })]);
+  const s1 = await runExisting({ tracerfy: broken, config: live }, sub.rows[0].id);
+  assert.equal(s1.status, 'done', s1.error);
+  assert.equal(broken.submissions[0]!.records[0]!.mail_address, '7 Fir St', 'mailed at the property when no mailing address is on file');
+  const col = (await admin.query(`select id from public.agent_jobs where job_type = 'skiptrace.collect' and input ->> 'submit_job_id' = $1`, [sub.rows[0].id])).rows[0];
+  await runExisting({ tracerfy: broken, config: live }, col.id);
+  const c = await runExisting({ tracerfy: broken, config: live }, col.id);
+  assert.equal(c.status, 'done', 'the batch is kept, not failed');
+  assert.match(c.result.phones_held_back, /could not start/);
+  assert.equal(c.cost_cents, 0, 'nothing held for a scrub that never started');
+  assert.equal(await count(`select 1 from public.agent_jobs where job_type = 'skiptrace.dnc' and input ->> 'collect_job_id' = $1`, [col.id]), 0);
+});
+
+test('safety: a batch that may already have been uploaded is never sent again', async () => {
+  const biz = await HH();
+  const fresh = fakeTracerfy();
+  const sub = await admin.query(`insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, result) values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, 'test:retry-upload', '{"upload_started_at":"2026-11-18T15:00:00Z"}'::jsonb) returning id`,
+    [biz, JSON.stringify({ trace_type: 'normal', list_row_ids: ['20000000-0000-0000-0000-00000000000b'] })]);
+  const j = await runExisting({ tracerfy: fresh, config: config({ tracerfyBase: 'https://tracerfy.com' }) }, sub.rows[0].id);
+  assert.equal(j.status, 'blocked');
+  assert.match(j.error, /paid for twice/);
+  assert.equal(fresh.submissions.length, 0, 'nothing uploaded');
+});
+
+test("safety: a lookup's own spending limit stops its next batch", async () => {
+  const biz = await HH();
+  const fresh = fakeTracerfy();
+  const sub = await admin.query(`insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key) values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, 'test:run-limit') returning id`,
+    [biz, JSON.stringify({ trace_type: 'normal', list_row_ids: ['20000000-0000-0000-0000-00000000000b'], run_id: '90000000-0000-0000-0000-0000000000c1', run_max_cents: 0 })]);
+  const j = await runExisting({ tracerfy: fresh, config: config({ tracerfyBase: 'https://tracerfy.com' }) }, sub.rows[0].id);
+  assert.equal(j.status, 'blocked');
+  assert.match(j.error, /spending limit/);
+  assert.equal(fresh.submissions.length, 0);
+});
+
+test('safety: a practice batch still waiting to run does not mark anyone as looked up', async () => {
+  const biz = await HH();
+  await admin.query(`insert into public.list_rows (id, import_id, business_id, row_num, owner_name, property_address, property_city, property_state, vendor_rank, owner_key, property_key, bucket)
+                     select '20000000-0000-0000-0000-00000000000c', '10000000-0000-0000-0000-000000000001', $1, 12, 'QUINN QUEUED', '8 Fir St', 'WICHITA', 'KS', 12, 'k-quinn', 'p-fir8', 'owner_occupied'`, [biz]);
+  await admin.query(`insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status) values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, 'test:queued-practice', 'queued')`,
+    [biz, JSON.stringify({ trace_type: 'normal', list_row_ids: ['20000000-0000-0000-0000-00000000000c'], practice: true })]);
+  const t = await admin.query(`select ${TRACED_SQL('r')} as traced from public.list_rows r where r.id = '20000000-0000-0000-0000-00000000000c'`);
+  assert.equal(t.rows[0].traced, false);
+  await admin.query(`update public.agent_jobs set status = 'cancelled' where idempotency_key = 'test:queued-practice'`);
 });

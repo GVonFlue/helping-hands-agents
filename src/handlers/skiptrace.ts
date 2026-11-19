@@ -50,6 +50,8 @@ export const TRACED_SQL = (r: string) => `exists (
    where j.business_id = ${r}.business_id and j.job_type = 'skiptrace.submit'
      and j.status in ('queued', 'running', 'done')
      and coalesce((j.result ->> 'test_mode')::boolean, false) = false
+     and coalesce((j.input ->> 'practice')::boolean, false) = false
+     and not coalesce(j.result ? 'skipped', false)
      and (j.input -> 'list_row_ids') ? r2.id::text
      and r2.owner_key = ${r}.owner_key)`;
 
@@ -57,6 +59,25 @@ export const TRACED_SQL = (r: string) => `exists (
 // every follow-up job so the CRM can total progress and cost per lookup.
 const runIdOf = (job: { input: Record<string, unknown> }) =>
   typeof job.input.run_id === 'string' && UUID_RE.test(job.input.run_id) ? job.input.run_id : undefined;
+
+// A lookup's own spending limit (max_spend_cents on run.custom), carried on every
+// follow-up job as run_max_cents and checked before each paid step.
+const runMaxOf = (job: { input: Record<string, unknown> }) =>
+  typeof job.input.run_max_cents === 'number' && job.input.run_max_cents >= 0 ? job.input.run_max_cents : undefined;
+async function runSpentCents(db: Db, businessId: string, runId: string): Promise<number> {
+  const { rows } = await db.query(
+    `select coalesce(sum(cost_cents), 0)::int as c from public.agent_jobs where business_id = $1 and input ->> 'run_id' = $2`,
+    [businessId, runId],
+  );
+  return rows[0]?.c ?? 0;
+}
+async function heldOn(db: Db, jobId: string): Promise<number> {
+  const { rows } = await db.query(`select coalesce(cost_cents, 0)::int as c from public.agent_jobs where id = $1`, [jobId]);
+  return rows[0]?.c ?? 0;
+}
+const carry = (job: { input: Record<string, unknown> }) => ({
+  run_id: runIdOf(job), run_max_cents: runMaxOf(job), practice: isPractice(job) || undefined,
+});
 
 // ---- plan.skiptrace -----------------------------------------------------------
 
@@ -183,11 +204,15 @@ export const skiptraceSubmit: Handler = async (ctx) => {
     };
     if (trace_type === 'normal') {
       const p = parseOwnerName(r.owner_name, firstNameFromRaw(r.raw))[0];
-      if (!p || !r.mailing_address) continue;
+      if (!p) continue; // planners send unparseable names as advanced; never expected here
+      // No mailing address on file (often owner-occupied): they get mail at the property.
+      const mail = r.mailing_address
+        ? { a: r.mailing_address, c: r.mailing_city ?? '', s: r.mailing_state ?? '', z: r.mailing_zip ?? '' }
+        : { a: r.property_address ?? '', c: r.property_city ?? '', s: r.property_state ?? 'KS', z: r.property_zip ?? '' };
       Object.assign(rec, {
         first_name: titleCase(p.first), last_name: titleCase(p.last),
-        mail_address: r.mailing_address, mail_city: r.mailing_city ?? '',
-        mail_state: (r.mailing_state ?? '').slice(0, 2), mail_zip: String(r.mailing_zip ?? '').slice(0, 5),
+        mail_address: mail.a, mail_city: mail.c,
+        mail_state: String(mail.s).slice(0, 2), mail_zip: String(mail.z).slice(0, 5),
       });
     }
     if (rec.address && rec.city) records.push(rec);
@@ -201,6 +226,29 @@ export const skiptraceSubmit: Handler = async (ctx) => {
     return { status: 'blocked', error: `Not enough Scrub budget left this month ($${(left / 100).toFixed(2)} left, batch needs up to $${(estimate / 100).toFixed(2)}).`, result: { budget_left_cents: left, estimate_cents: estimate } };
   }
 
+  const runId = runIdOf(job);
+  const runMax = runMaxOf(job);
+  if (!test && runId && runMax !== undefined) {
+    const spent = await runSpentCents(db, job.business_id, runId);
+    if (spent + estimate > runMax) {
+      return { status: 'blocked', error: `This lookup reached its spending limit ($${(runMax / 100).toFixed(2)}); this batch was not sent.`, result: { run_spent_cents: spent, estimate_cents: estimate, run_max_cents: runMax } };
+    }
+  }
+
+  // Never upload the same batch twice: if an earlier attempt got as far as the upload
+  // (a timeout or crash after Tracerfy accepted it), stop and let a person check.
+  const prior = await db.query(`select result from public.agent_jobs where id = $1`, [job.id]);
+  if (prior.rows[0]?.result?.upload_started_at) {
+    return {
+      status: 'blocked',
+      error: 'An earlier try may already have uploaded this batch to Tracerfy. Not sent again, so nobody is paid for twice. Check the Tracerfy dashboard before re-running it.',
+      result: { upload_started_at: prior.rows[0].result.upload_started_at },
+    };
+  }
+  await db.query(
+    `update public.agent_jobs set result = coalesce(result, '{}'::jsonb) || jsonb_build_object('upload_started_at', now()) where id = $1`,
+    [job.id],
+  );
   const { queueId } = await tracerfy.submitTrace(trace_type, records);
   const traceCents = test ? 0 : records.length * CREDITS[trace_type] * CENTS_PER_CREDIT;
   return {
@@ -213,7 +261,7 @@ export const skiptraceSubmit: Handler = async (ctx) => {
         `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
          values ($1, 'scrub', 'skiptrace.collect', $2::jsonb, $3, 'queued', now() + interval '90 seconds')
          on conflict (idempotency_key) do nothing`,
-        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type, run_id: runIdOf(job), practice: isPractice(job) || undefined }), `skiptrace.collect:${job.id}`],
+        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type, ...carry(job) }), `skiptrace.collect:${job.id}`],
       );
     },
   };
@@ -290,10 +338,26 @@ export const skiptraceCollect: Handler = async (ctx) => {
   const actualCents = test ? 0 : q.creditsDeducted !== null ? q.creditsDeducted * CENTS_PER_CREDIT : null;
   const uniquePhones = [...new Set(phones.map((p) => p.phone))];
   let dncQueueId: number | null = null;
+  let heldBack: string | undefined;
+  const dncEst = uniquePhones.length * CENTS_PER_CREDIT;
   if (config.skiptraceDnc && uniquePhones.length) {
-    const est = uniquePhones.length * CENTS_PER_CREDIT;
-    const left = await budgetLeft(db, { config, businessId: job.business_id, practice: isPractice(job) });
-    if (left >= est) dncQueueId = (await tracerfy.submitDnc(uniquePhones)).dncQueueId;
+    // The submit job's hold is replaced by the real charge in this transaction, so
+    // count the real charge (when known) instead of the hold.
+    const left = (await budgetLeft(db, { config, businessId: job.business_id, practice: isPractice(job) }))
+      + (actualCents !== null ? await heldOn(db, submit_job_id) - actualCents : 0);
+    const runId = runIdOf(job);
+    const runMax = runMaxOf(job);
+    const runSpent = !test && runId && runMax !== undefined ? await runSpentCents(db, job.business_id, runId) : 0;
+    if (left < dncEst) heldBack = 'budget ran out before the Do Not Call check';
+    else if (runMax !== undefined && runSpent + dncEst > runMax) heldBack = "this lookup's spending limit was reached before the Do Not Call check";
+    else {
+      try {
+        dncQueueId = (await tracerfy.submitDnc(uniquePhones)).dncQueueId;
+      } catch (err) {
+        // The trace is already paid for: keep the emails and LLC people, hold the phones.
+        heldBack = `Do Not Call check could not start: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
   }
   const source = `tracerfy ${trace_type} trace`;
 
@@ -306,8 +370,11 @@ export const skiptraceCollect: Handler = async (ctx) => {
       dnc_queue_id: dncQueueId,
       // Phones wait here until the DNC scrub comes back (skiptrace.dnc saves them).
       pending_phones: phones,
-      phones_held_back: config.skiptraceDnc && !dncQueueId && phones.length ? 'budget ran out before the DNC scrub' : undefined,
+      phones_held_back: config.skiptraceDnc && !dncQueueId && phones.length ? heldBack ?? 'not checked' : undefined,
     },
+    // The scrub's cost is held here as soon as it's sent, so the next batch sees it
+    // in the budget; skiptrace.dnc swaps in the real charge.
+    costCents: dncQueueId && !test ? dncEst : 0,
     write: async (tx) => {
       // Test mode: mock data must never land on Francis's real owners.
       if (test) {
@@ -316,7 +383,7 @@ export const skiptraceCollect: Handler = async (ctx) => {
             `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
              values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
              on conflict (idempotency_key) do nothing`,
-            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job), practice: isPractice(job) || undefined }), `skiptrace.dnc:${job.id}`],
+            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, ...carry(job) }), `skiptrace.dnc:${job.id}`],
           );
         }
         return { test_mode: true, findings_saved: 0, would_save: { emails: emails.length, entity_members: members.length, phones: phones.length } };
@@ -337,7 +404,7 @@ export const skiptraceCollect: Handler = async (ctx) => {
           `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
            values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
            on conflict (idempotency_key) do nothing`,
-          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job), practice: isPractice(job) || undefined }), `skiptrace.dnc:${job.id}`],
+          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, ...carry(job) }), `skiptrace.dnc:${job.id}`],
         );
       }
       return { findings_saved: saved, trace_cents: actualCents };
@@ -373,9 +440,11 @@ export const skiptraceDnc: Handler = async (ctx) => {
   return {
     status: 'done',
     lockKey: `skiptrace-dnc:${collect_job_id}`,
-    costCents: test ? 0 : charged * CENTS_PER_CREDIT,
-    result: { dnc_queue_id, phones: pending.length, scrubbed: q.results.length },
+    // The collect job held this scrub's estimate; it now carries the real charge.
+    costCents: 0,
+    result: { dnc_queue_id, phones: pending.length, scrubbed: q.results.length, charged_cents: test ? 0 : charged * CENTS_PER_CREDIT },
     write: async (tx) => {
+      if (!test) await tx.query(`update public.agent_jobs set cost_cents = $2 where id = $1`, [collect_job_id, charged * CENTS_PER_CREDIT]);
       let saved = 0;
       let flagged = 0;
       if (test) {
