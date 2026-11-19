@@ -310,3 +310,41 @@ test('test mode end to end: nothing saved on real owners, nobody marked as looke
   const real = await run({ tracerfy: mock, config: config() }, { type: 'person.lookup', agent: 'scrub', input: { list_row_id: '20000000-0000-0000-0000-000000000009' } });
   assert.doesNotMatch(String(real.result?.skipped ?? ''), /already looked up/);
 });
+
+test('practice run (CRM Control page): live worker, $0 cap, goes to the test server, saves nothing, costs nothing', async () => {
+  const biz = await HH();
+  const practiceServer = fakeTracerfy();
+  const live = config({ tracerfyBase: 'https://tracerfy.com' }); // the worker is live
+  const deps = { tracerfy: null, tracerfyPractice: practiceServer, config: live }; // the live client is never touched
+  await admin.query(`update public.agent_settings set monthly_cap_cents = 0 where business_id = $1 and agent = 'scrub'`, [biz]);
+  await admin.query(`insert into public.list_rows (id, import_id, business_id, row_num, owner_name, mailing_address, mailing_city, mailing_state, property_address, property_city, property_state, vendor_rank, owner_key, property_key, bucket)
+                     select '20000000-0000-0000-0000-00000000000a', '10000000-0000-0000-0000-000000000001', $1, 10, 'PAT PRACTICE', '6 Fir St', 'WICHITA', 'KS', '6 Fir St', 'WICHITA', 'KS', 10, 'k-pat', 'p-fir6', 'owner_occupied'`, [biz]);
+  const before = await count(`select 1 from public.enrichment_results where business_id = $1`, [biz]);
+
+  const sub = await admin.query(
+    `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key)
+     values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, 'test:practice-submit') returning id`,
+    [biz, JSON.stringify({ trace_type: 'normal', list_row_ids: ['20000000-0000-0000-0000-00000000000a'], practice: true, run_id: '90000000-0000-0000-0000-0000000000b1' })],
+  );
+  const s = await runExisting(deps, sub.rows[0].id);
+  assert.equal(s.status, 'done', s.error);
+  assert.equal(s.cost_cents, 0, 'nothing charged');
+  assert.equal(s.result.test_mode, true, 'so the owner is not marked as looked up');
+  assert.equal(practiceServer.submissions.length, 1, 'sent to the test server');
+
+  const col = (await admin.query(`select id, input from public.agent_jobs where job_type = 'skiptrace.collect' and input ->> 'submit_job_id' = $1`, [sub.rows[0].id])).rows[0];
+  assert.equal(col.input.practice, true);
+  await runExisting(deps, col.id);
+  const c = await runExisting(deps, col.id);
+  assert.equal(c.status, 'done', c.error);
+  const d = (await admin.query(`select id, input from public.agent_jobs where job_type = 'skiptrace.dnc' and input ->> 'collect_job_id' = $1`, [col.id])).rows[0];
+  if (d) {
+    assert.equal(d.input.practice, true);
+    const dj = await runExisting(deps, d.id);
+    assert.equal(dj.cost_cents, 0);
+  }
+  assert.equal(await count(`select 1 from public.enrichment_results where business_id = $1`, [biz]), before, 'no test data saved on real owners');
+  // Pat can still be looked up for real later.
+  const again = await run({ tracerfy: practiceServer, config: config() }, { type: 'person.lookup', agent: 'scrub', input: { list_row_id: '20000000-0000-0000-0000-00000000000a' } });
+  assert.doesNotMatch(String(again.result?.skipped ?? ''), /already looked up/);
+});

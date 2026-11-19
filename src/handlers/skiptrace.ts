@@ -30,8 +30,14 @@ const DNC_CREDITS_PER_OWNER_ESTIMATE = 6; // live: ~4 phones per person, ~6 per 
 // Tracerfy's mock server (fake data, no charges): skip the budget gate and record $0.
 // Against the real server the gate always applies.
 export const isTestMode = (config: Ctx['config']) => /(^|\/\/)mock\./.test(config.tracerfyBase);
-export const budgetLeft = async (db: Db, ctx: { config: Ctx['config']; businessId: string }) =>
-  isTestMode(ctx.config) ? Number.MAX_SAFE_INTEGER : clientBudgetLeft(db, ctx.businessId, 'scrub');
+// A practice run from the CRM Control page: one lookup sent to Tracerfy's free test
+// server so the whole flow can be checked on the live CRM without spending anything.
+// It rides along on every follow-up job (input.practice) and behaves like test mode.
+export const isPractice = (job: { input: Record<string, unknown> }) => job.input.practice === true;
+export const testModeFor = (config: Ctx['config'], job: { input: Record<string, unknown> }) => isTestMode(config) || isPractice(job);
+const clientFor = (ctx: Ctx) => (isPractice(ctx.job) ? ctx.tracerfyPractice : ctx.tracerfy);
+export const budgetLeft = async (db: Db, ctx: { config: Ctx['config']; businessId: string; practice?: boolean }) =>
+  isTestMode(ctx.config) || ctx.practice ? Number.MAX_SAFE_INTEGER : clientBudgetLeft(db, ctx.businessId, 'scrub');
 
 export function estimateCents(type: TraceType, rows: number, dnc: boolean): number {
   return rows * (CREDITS[type] + (dnc ? DNC_CREDITS_PER_OWNER_ESTIMATE : 0)) * CENTS_PER_CREDIT;
@@ -154,7 +160,10 @@ export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
 
 const SubmitInput = z.object({ trace_type: z.enum(['normal', 'advanced']), list_row_ids: z.array(z.string().regex(UUID_RE)).min(1).max(500) });
 
-export const skiptraceSubmit: Handler = async ({ db, job, config, tracerfy }) => {
+export const skiptraceSubmit: Handler = async (ctx) => {
+  const { db, job, config } = ctx;
+  const tracerfy = clientFor(ctx);
+  const test = testModeFor(config, job);
   const parsed = SubmitInput.safeParse(job.input);
   if (!parsed.success) return { status: 'failed', error: 'input needs trace_type and list_row_ids' };
   if (!tracerfy) return { status: 'blocked', error: 'Tracerfy is not connected (TRACERFY_API_KEY not set).' };
@@ -187,24 +196,24 @@ export const skiptraceSubmit: Handler = async ({ db, job, config, tracerfy }) =>
 
   // The budget check right before the paid call (handoff rule).
   const estimate = estimateCents(trace_type, records.length, config.skiptraceDnc);
-  const left = await budgetLeft(db, { config, businessId: job.business_id });
+  const left = await budgetLeft(db, { config, businessId: job.business_id, practice: isPractice(job) });
   if (left < estimate) {
     return { status: 'blocked', error: `Not enough Scrub budget left this month ($${(left / 100).toFixed(2)} left, batch needs up to $${(estimate / 100).toFixed(2)}).`, result: { budget_left_cents: left, estimate_cents: estimate } };
   }
 
   const { queueId } = await tracerfy.submitTrace(trace_type, records);
-  const traceCents = isTestMode(config) ? 0 : records.length * CREDITS[trace_type] * CENTS_PER_CREDIT;
+  const traceCents = test ? 0 : records.length * CREDITS[trace_type] * CENTS_PER_CREDIT;
   return {
     status: 'done',
     // Held at the most this batch can cost until collect records the real charge.
     costCents: traceCents,
-    result: { queue_id: queueId, trace_type, rows_sent: records.length, max_trace_cents: traceCents, test_mode: isTestMode(config) || undefined },
+    result: { queue_id: queueId, trace_type, rows_sent: records.length, max_trace_cents: traceCents, test_mode: test || undefined },
     write: async (tx) => {
       await tx.query(
         `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
          values ($1, 'scrub', 'skiptrace.collect', $2::jsonb, $3, 'queued', now() + interval '90 seconds')
          on conflict (idempotency_key) do nothing`,
-        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type, run_id: runIdOf(job) }), `skiptrace.collect:${job.id}`],
+        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type, run_id: runIdOf(job), practice: isPractice(job) || undefined }), `skiptrace.collect:${job.id}`],
       );
     },
   };
@@ -216,7 +225,10 @@ const CollectInput = z.object({ submit_job_id: z.string().regex(UUID_RE), queue_
 
 type PendingPhone = { list_row_id: string; entity_id: string | null; phone: string; rank: number; flagged_dnc: boolean; litigator: boolean };
 
-export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) => {
+export const skiptraceCollect: Handler = async (ctx) => {
+  const { db, job, config } = ctx;
+  const tracerfy = clientFor(ctx);
+  const test = testModeFor(config, job);
   const parsed = CollectInput.safeParse(job.input);
   if (!parsed.success) return { status: 'failed', error: 'input needs submit_job_id, queue_id, trace_type' };
   if (!tracerfy) return { status: 'blocked', error: 'Tracerfy is not connected (TRACERFY_API_KEY not set).' };
@@ -255,7 +267,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
     rows_with_names: parsedAll.filter((c) => c.names.length).length,
     rows_with_ref: parsedAll.filter((c) => c.ref).length,
     // Mock data is fake, so in test mode show addresses side by side to check matching.
-    ...(isTestMode(config)
+    ...(test
       ? {
           sample_returned: parsedAll.slice(0, 3).map((c) => `${c.address} | ${c.city}`),
           sample_sent: listRows.slice(0, 3).map((r) => `${r.property_address} | ${r.property_city}`),
@@ -275,12 +287,12 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
     if (lr.entity_id) for (const n of c.names) members.push({ list_row_id: lr.id, entity_id: lr.entity_id, name: titleCase(n) });
   }
 
-  const actualCents = isTestMode(config) ? 0 : q.creditsDeducted !== null ? q.creditsDeducted * CENTS_PER_CREDIT : null;
+  const actualCents = test ? 0 : q.creditsDeducted !== null ? q.creditsDeducted * CENTS_PER_CREDIT : null;
   const uniquePhones = [...new Set(phones.map((p) => p.phone))];
   let dncQueueId: number | null = null;
   if (config.skiptraceDnc && uniquePhones.length) {
     const est = uniquePhones.length * CENTS_PER_CREDIT;
-    const left = await budgetLeft(db, { config, businessId: job.business_id });
+    const left = await budgetLeft(db, { config, businessId: job.business_id, practice: isPractice(job) });
     if (left >= est) dncQueueId = (await tracerfy.submitDnc(uniquePhones)).dncQueueId;
   }
   const source = `tracerfy ${trace_type} trace`;
@@ -298,13 +310,13 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
     },
     write: async (tx) => {
       // Test mode: mock data must never land on Francis's real owners.
-      if (isTestMode(config)) {
+      if (test) {
         if (dncQueueId) {
           await tx.query(
             `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
              values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
              on conflict (idempotency_key) do nothing`,
-            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job) }), `skiptrace.dnc:${job.id}`],
+            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job), practice: isPractice(job) || undefined }), `skiptrace.dnc:${job.id}`],
           );
         }
         return { test_mode: true, findings_saved: 0, would_save: { emails: emails.length, entity_members: members.length, phones: phones.length } };
@@ -325,7 +337,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
           `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
            values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
            on conflict (idempotency_key) do nothing`,
-          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job) }), `skiptrace.dnc:${job.id}`],
+          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job), practice: isPractice(job) || undefined }), `skiptrace.dnc:${job.id}`],
         );
       }
       return { findings_saved: saved, trace_cents: actualCents };
@@ -337,7 +349,10 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
 
 const DncInput = z.object({ collect_job_id: z.string().regex(UUID_RE), dnc_queue_id: z.number(), trace_type: z.enum(['normal', 'advanced']) });
 
-export const skiptraceDnc: Handler = async ({ db, job, config, tracerfy }) => {
+export const skiptraceDnc: Handler = async (ctx) => {
+  const { db, job, config } = ctx;
+  const tracerfy = clientFor(ctx);
+  const test = testModeFor(config, job);
   const parsed = DncInput.safeParse(job.input);
   if (!parsed.success) return { status: 'failed', error: 'input needs collect_job_id, dnc_queue_id, trace_type' };
   if (!tracerfy) return { status: 'blocked', error: 'Tracerfy is not connected (TRACERFY_API_KEY not set).' };
@@ -358,12 +373,12 @@ export const skiptraceDnc: Handler = async ({ db, job, config, tracerfy }) => {
   return {
     status: 'done',
     lockKey: `skiptrace-dnc:${collect_job_id}`,
-    costCents: isTestMode(config) ? 0 : charged * CENTS_PER_CREDIT,
+    costCents: test ? 0 : charged * CENTS_PER_CREDIT,
     result: { dnc_queue_id, phones: pending.length, scrubbed: q.results.length },
     write: async (tx) => {
       let saved = 0;
       let flagged = 0;
-      if (isTestMode(config)) {
+      if (test) {
         flagged = pending.filter((p) => { const s2 = scrub.get(p.phone); return !s2 || !s2.clean || s2.litigator; }).length;
         return { test_mode: true, findings_saved: 0, would_save_phones: pending.length, would_flag_do_not_call: flagged };
       }

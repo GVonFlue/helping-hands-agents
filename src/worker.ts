@@ -11,7 +11,7 @@ import type { Tracerfy } from './tracerfy.ts';
 import { emptySpend } from './spend.ts';
 import type { Ctx, Job } from './types.ts';
 
-export type Deps = { db: Db; config: Config; llm: Llm | null; search: SearchProvider | null; tracerfy: Tracerfy | null };
+export type Deps = { db: Db; config: Config; llm: Llm | null; search: SearchProvider | null; tracerfy: Tracerfy | null; tracerfyPractice: Tracerfy | null };
 
 // Runs one claimed job to a final state. Never throws.
 export async function runJob(deps: Deps, job: Job): Promise<string> {

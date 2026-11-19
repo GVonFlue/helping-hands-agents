@@ -79,6 +79,13 @@ The type counts on the cards come from the same function, called once per type, 
 
 **Start lookup** opens the confirm dialog (Confirm artboard). It lists the owners, how many get phones and emails, how many Facebook searches, the cost, and "Results in about an hour". It also says: "Paid lookups can't be undone once they start. Nothing is sent to anyone." Buttons: **Go back** and **Yes, start it**.
 
+**Practice run.** The confirm dialog also has a third button, **Practice run (free)**, shown to admins. It starts the same lookup with `"practice": true` in the input. The worker then:
+
+- sends phone and email lookups to Tracerfy's free test server: $0 charged, the budget is ignored, nothing is saved on real owners, and nobody is marked as looked up;
+- only counts Facebook searches, without running them.
+
+Every job the run creates carries `"practice": true`. On the page, show a grey **Practice** badge on that run's row. When it's done, show "Practice run: would have found N emails and N phones", summed from `result.would_save` on its `skiptrace.collect` jobs, plus "No money spent, nothing saved." This lets Logan and Francis test the whole screen on the live CRM before any real money goes in.
+
 On **Yes, start it**, insert one row into `agent_jobs`. Members may already insert queued jobs, so no policy change is needed:
 
 ```json
@@ -96,7 +103,8 @@ On **Yes, start it**, insert one row into `agent_jobs`. Members may already inse
     "owner_types": ["person", "company", "estate"],
     "include_mailed": false,
     "find": ["contact", "facebook"],
-    "max_spend_cents": 5000
+    "max_spend_cents": 5000,
+    "practice": false
   }
 }
 ```
@@ -104,6 +112,7 @@ On **Yes, start it**, insert one row into `agent_jobs`. Members may already inse
 - `owner_types` is any of `person`, `company`, `estate`. At least one.
 - `find` is any of `contact`, `facebook`. At least one.
 - Leave `max_spend_cents` out when the field is empty.
+- `practice` is `true` only from the Practice run button.
 - Disable the button while the insert is in flight, so a double click can't start two runs.
 
 What the worker does with it (you don't build this):
@@ -168,4 +177,18 @@ Test in `test_rls.sql` that calling `promote_enrichment` for two findings of the
 - [ ] A viewer-role login can see the page but can't start a lookup, change the budget or flip agents. The buttons are hidden and the database refuses.
 - [ ] Usable at 390px wide, with no sideways scrolling.
 - [ ] `npm run build`, `npm run test:db` and `npm run test:api` pass.
-- [ ] Reply to Logan with the migration name and a short screen recording of starting a Top 100 lookup.
+- [ ] A **Practice run** creates a `run.custom` job with `"practice": true`, shows the Practice badge and the "would have found" line, and leaves the budget and the review list unchanged.
+- [ ] Reply to Logan with the migration name and a short screen recording of a Top 100 **practice** run.
+
+## 5. Go-live: before any real money (Logan and Francis)
+
+Real lookups stay off until every step below passes on the live CRM:
+
+1. Garrett ships the page and every box in section 4 is ticked.
+2. **Logan, practice run:** Top 100, all kinds, phones and Facebook. The counts match the summary, the confirm step reads clearly, progress moves and finishes, the budget doesn't change, and nothing new shows up in review.
+3. **Francis, alone, on his phone and on his computer:** he does the same practice run without help while Logan watches. Write down every place he hesitates, and fix those before going on.
+4. **Review on real data, still no money:** Francis reviews 10 owners from the 1,389 findings already waiting. Check each added owner becomes one person in People, Do Not Call phones are marked, a first email draft shows up in Approvals within the hour, and nothing is sent.
+5. **Switches and budget:** Francis turns Scrub off and on, and changes his budget. The banner and Settings agree.
+6. **Fund it:** Francis moves Tracerfy to his name, loads $200, and sets his November budget to $200.
+7. **First real lookup, small:** Top 100, people only, about $11 to $14. Logan checks the matches and that the cost landed inside the estimate.
+8. **Then the top 1,000:** 974 owners, about $128, never more than $147.

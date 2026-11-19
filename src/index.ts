@@ -72,6 +72,8 @@ const provider =
       : null;
 const search = provider ? rateLimited(provider, config.searchMinIntervalMs) : null;
 const tracerfy = config.tracerfyApiKey ? tracerfyClient(config.tracerfyApiKey, config.tracerfyBase) : null;
+// Practice runs from the CRM Control page always go to Tracerfy's free test server.
+const tracerfyPractice = config.tracerfyApiKey ? tracerfyClient(config.tracerfyApiKey, 'https://mock.tracerfy.com') : null;
 
 const stop = new AbortController();
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
@@ -81,5 +83,5 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   });
 }
 
-await loop({ db, config, llm, search, tracerfy }, stop.signal);
+await loop({ db, config, llm, search, tracerfy, tracerfyPractice }, stop.signal);
 await db.end();

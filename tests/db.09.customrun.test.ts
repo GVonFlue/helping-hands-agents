@@ -139,6 +139,23 @@ test('custom run: Facebook only for people queues no paid lookups', async () => 
   assert.equal(job.result.contact, undefined);
 });
 
+test('custom run, practice: ignores the budget, marks every batch practice, searches nobody on Facebook', async () => {
+  const live = config({ tracerfyBase: 'https://tracerfy.com' });
+  const job = await run({ tracerfy: null, tracerfyPractice: tf, search, config: live }, {
+    type: 'run.custom', agent: 'manager',
+    input: { ...top1000, owner_types: ['person'], include_mailed: true, find: ['contact', 'facebook'], practice: true, max_spend_cents: 0 },
+  });
+  assert.equal(job.status, 'done', job.error);
+  assert.equal(job.result.practice, true);
+  assert.equal(job.result.contact.to_look_up, 1, 'Mark: practice ignores the $0 limit');
+  assert.equal(job.result.contact.estimated_max_cents, 0);
+  assert.equal(job.result.contact.budget_left_cents, 'practice');
+  assert.equal(job.result.searches_queued, 0, 'Facebook only counted');
+  const sub = (await admin.query(`select input from public.agent_jobs where job_type = 'skiptrace.submit' and input ->> 'run_id' = $1`, [job.id])).rows[0];
+  assert.equal(sub.input.practice, true);
+  await admin.query(`update public.agent_jobs set status = 'cancelled' where input ->> 'run_id' = $1`, [job.id]);
+});
+
 test('custom run: settings that make no sense fail with a plain reason', async () => {
   const bad = await run({ tracerfy: tf, search, config: cfg }, {
     type: 'run.custom', agent: 'manager', input: { ...top1000, owner_types: [], find: ['contact'] },

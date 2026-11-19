@@ -30,6 +30,9 @@ export const RunInput = z.object({
   include_mailed: z.boolean().default(false),
   find: z.array(Find).min(1),
   max_spend_cents: z.number().int().min(0).optional(),
+  // Practice: phone and email lookups go to Tracerfy's free test server ($0, nothing
+  // saved, nobody marked as looked up); Facebook is only counted, not searched.
+  practice: z.boolean().default(false),
 });
 
 const BATCH = 500; // Tracerfy rows per upload (skiptrace.submit's limit)
@@ -47,13 +50,15 @@ type Owner = {
   fb_done: boolean;
 };
 
-export const customRun: Handler = async ({ db, job, config, tracerfy, search }) => {
+export const customRun: Handler = async ({ db, job, config, tracerfy: liveTracerfy, tracerfyPractice, search }) => {
   const parsed = RunInput.safeParse(job.input);
   if (!parsed.success) {
     return { status: 'failed', error: `run settings not understood: ${parsed.error.issues.map((i) => i.path.join('.') + ' ' + i.message).join('; ')}` };
   }
   const run = parsed.data;
   if (run.rank_to < run.rank_from) return { status: 'failed', error: 'rank_to is below rank_from' };
+  const tracerfy = run.practice ? tracerfyPractice : liveTracerfy;
+  const free = run.practice || isTestMode(config);
 
   const { rows: owners } = await db.query<Owner>(
     `with best as (
@@ -88,6 +93,7 @@ export const customRun: Handler = async ({ db, job, config, tracerfy, search }) 
     owners_in_ranks: owners.length,
     owners_picked: picked.length,
     skipped_mailed: run.include_mailed ? 0 : owners.filter((o) => run.owner_types.includes(o.owner_type) && o.mailed).length,
+    practice: run.practice || undefined,
   };
 
   // ---- phones and emails (paid) ----
@@ -97,8 +103,8 @@ export const customRun: Handler = async ({ db, job, config, tracerfy, search }) 
     if (!tracerfy) {
       result.contact = { skipped: 'Tracerfy is not connected' };
     } else {
-      const left = await budgetLeft(db, { config, businessId: job.business_id });
-      const cap = Math.min(left, run.max_spend_cents ?? Number.MAX_SAFE_INTEGER);
+      const left = await budgetLeft(db, { config, businessId: job.business_id, practice: run.practice });
+      const cap = run.practice ? Number.MAX_SAFE_INTEGER : Math.min(left, run.max_spend_cents ?? Number.MAX_SAFE_INTEGER);
       const alreadyDone = picked.filter((o) => o.traced).length;
       const bigCompanies = picked.filter((o) => !o.traced && o.owner_type === 'company' && o.doors >= config.skipBigCompanyDoors).length;
       let held = 0;
@@ -124,8 +130,8 @@ export const customRun: Handler = async ({ db, job, config, tracerfy, search }) 
         already_looked_up: alreadyDone,
         skipped_big_companies: bigCompanies,
         over_budget: overBudget,
-        estimated_max_cents: isTestMode(config) ? 0 : held,
-        budget_left_cents: isTestMode(config) ? 'test mode' : left,
+        estimated_max_cents: free ? 0 : held,
+        budget_left_cents: run.practice ? 'practice' : isTestMode(config) ? 'test mode' : left,
       };
     }
   }
@@ -136,9 +142,12 @@ export const customRun: Handler = async ({ db, job, config, tracerfy, search }) 
     if (!search) {
       result.facebook = { skipped: 'no search provider configured' };
     } else {
-      facebook.push(...picked.filter((o) => o.owner_type === 'person' && !o.fb_done));
+      const toSearch = picked.filter((o) => o.owner_type === 'person' && !o.fb_done);
+      // Real searches would save real findings, so a practice run only counts them.
+      if (!run.practice) facebook.push(...toSearch);
       result.facebook = {
-        to_search: facebook.length,
+        to_search: toSearch.length,
+        searched_in_practice: run.practice ? 0 : undefined,
         already_searched: picked.filter((o) => o.owner_type === 'person' && o.fb_done).length,
         not_people: picked.filter((o) => o.owner_type !== 'person').length,
       };
@@ -156,7 +165,7 @@ export const customRun: Handler = async ({ db, job, config, tracerfy, search }) 
           const r = await tx.query(
             `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status)
              values ($1, 'scrub', 'skiptrace.submit', $2::jsonb, $3, 'queued') on conflict (idempotency_key) do nothing`,
-            [job.business_id, JSON.stringify({ trace_type: type, list_row_ids: ids.slice(i, i + BATCH), run_id: job.id }),
+            [job.business_id, JSON.stringify({ trace_type: type, list_row_ids: ids.slice(i, i + BATCH), run_id: job.id, practice: run.practice || undefined }),
              `skiptrace.submit:${job.business_id}:run:${job.id}:${type}:${i / BATCH}`],
           );
           batches += r.rowCount ?? 0;

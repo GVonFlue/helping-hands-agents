@@ -23,6 +23,7 @@ export type Ctx = {
   llm: Llm | null; // null when no API key is configured
   search: SearchProvider | null; // null until a provider is signed off
   tracerfy: Tracerfy | null; // null until TRACERFY_API_KEY is set
+  tracerfyPractice: Tracerfy | null; // Tracerfy's free test server, for practice runs from the CRM
   spend: Spend; // house spend for this job; saved into result.spend
 };
 
