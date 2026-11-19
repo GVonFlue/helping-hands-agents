@@ -47,6 +47,11 @@ export const TRACED_SQL = (r: string) => `exists (
      and (j.input -> 'list_row_ids') ? r2.id::text
      and r2.owner_key = ${r}.owner_key)`;
 
+// A lookup Francis started from the Control page (run.custom): its id rides along on
+// every follow-up job so the CRM can total progress and cost per lookup.
+const runIdOf = (job: { input: Record<string, unknown> }) =>
+  typeof job.input.run_id === 'string' && UUID_RE.test(job.input.run_id) ? job.input.run_id : undefined;
+
 // ---- plan.skiptrace -----------------------------------------------------------
 
 export const planSkiptrace: Handler = async ({ db, job, config, tracerfy }) => {
@@ -199,7 +204,7 @@ export const skiptraceSubmit: Handler = async ({ db, job, config, tracerfy }) =>
         `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
          values ($1, 'scrub', 'skiptrace.collect', $2::jsonb, $3, 'queued', now() + interval '90 seconds')
          on conflict (idempotency_key) do nothing`,
-        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type }), `skiptrace.collect:${job.id}`],
+        [job.business_id, JSON.stringify({ submit_job_id: job.id, queue_id: queueId, trace_type, run_id: runIdOf(job) }), `skiptrace.collect:${job.id}`],
       );
     },
   };
@@ -299,7 +304,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
             `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
              values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
              on conflict (idempotency_key) do nothing`,
-            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type }), `skiptrace.dnc:${job.id}`],
+            [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job) }), `skiptrace.dnc:${job.id}`],
           );
         }
         return { test_mode: true, findings_saved: 0, would_save: { emails: emails.length, entity_members: members.length, phones: phones.length } };
@@ -320,7 +325,7 @@ export const skiptraceCollect: Handler = async ({ db, job, config, tracerfy }) =
           `insert into public.agent_jobs (business_id, agent, job_type, input, idempotency_key, status, run_after)
            values ($1, 'scrub', 'skiptrace.dnc', $2::jsonb, $3, 'queued', now() + interval '60 seconds')
            on conflict (idempotency_key) do nothing`,
-          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type }), `skiptrace.dnc:${job.id}`],
+          [job.business_id, JSON.stringify({ collect_job_id: job.id, dnc_queue_id: dncQueueId, trace_type, run_id: runIdOf(job) }), `skiptrace.dnc:${job.id}`],
         );
       }
       return { findings_saved: saved, trace_cents: actualCents };

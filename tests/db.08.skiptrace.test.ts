@@ -191,6 +191,8 @@ test('plan.skiptrace: normal trace for people, advanced for companies and probat
 test('submit: checks the budget, sends one batch, holds its max cost, queues collect', async () => {
   const biz = await HH();
   const sub = (await admin.query(`select id from public.agent_jobs where business_id = $1 and job_type = 'skiptrace.submit' and status = 'queued' and input->>'trace_type' = 'normal'`, [biz])).rows[0];
+  // As if it came from a Control-page lookup: the run id must ride along to collect and DNC.
+  await admin.query(`update public.agent_jobs set input = input || '{"run_id":"90000000-0000-0000-0000-0000000000a1"}' where id = $1`, [sub.id]);
   const job = await runExisting({ tracerfy: tf }, sub.id);
   assert.equal(job.status, 'done', job.error);
   const sent = tf.submissions[0]!;
@@ -199,6 +201,7 @@ test('submit: checks the budget, sends one batch, holds its max cost, queues col
   assert.deepEqual([karl.first_name, karl.last_name, karl.mail_address, karl.zip], ['Karl', 'Stoltenberg', '12 Elm St', '67202']);
   assert.equal(job.cost_cents, sent.records.length * 2, 'held at 2¢ a row until the real charge is known');
   assert.equal(await count(`select 1 from public.agent_jobs where job_type = 'skiptrace.collect' and status = 'queued'`), 1);
+  assert.equal(await count(`select 1 from public.agent_jobs where job_type = 'skiptrace.collect' and input ->> 'run_id' = '90000000-0000-0000-0000-0000000000a1'`), 1);
 });
 
 test('collect: waits without using an attempt, then saves emails, sends phones to DNC, fixes the cost', async () => {
@@ -218,6 +221,7 @@ test('collect: waits without using an attempt, then saves emails, sends phones t
   assert.deepEqual(tf.dncSubmissions[0]!.sort(), ['3165550001', '3165550002', '3165550055'], 'deduped, 10 digits');
   const sub = (await admin.query(`select cost_cents from public.agent_jobs where id = $1`, [done.input.submit_job_id])).rows[0];
   assert.equal(sub.cost_cents, 3 * 2, 'submit job now shows what Tracerfy charged (3 hits, Smith was a free miss)');
+  assert.equal(await count(`select 1 from public.agent_jobs where job_type = 'skiptrace.dnc' and input ->> 'run_id' = '90000000-0000-0000-0000-0000000000a1'`), 1);
 });
 
 test('dnc: saves phones with Do Not Call from the scrub and records its cost', async () => {
