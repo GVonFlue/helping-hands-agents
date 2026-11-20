@@ -67,9 +67,9 @@ Show one banner, checked in this order:
 | The newest `skiptrace.submit` or `skiptrace.collect` job in the last 26 hours failed with an error containing `not enough credits`, and no `skiptrace.submit` has finished `done` since | Red: "Phone and email lookups are paused. Your Tracerfy account is out of credit, so nothing paid can run. Facebook searches and drafts are still working." Button: **Add credit on Tracerfy** (opens tracerfy.com in a new tab) |
 | Any of manager, scrub or contact has `enabled = false` in `agent_settings` | Amber: "<Agent> is turned off. Its work is waiting and picks up when you turn it back on." Button: **Turn on** |
 | `agent_budget_left(business, 'scrub')` is under 320 (one morning's 20 owners) | Amber: "This month's lookup budget is used up. Lookups start again on the 1st, or raise your budget." Button: **Raise budget** |
+| Otherwise | Green: "Everything's running." |
 
 Check "turned off" before the budget: `agent_budget_left` returns 0 when Scrub is off, so in the other order a switched-off Scrub would read as "budget used up".
-| Otherwise | Green: "Everything's running." |
 
 ### 2b. Four tiles
 
